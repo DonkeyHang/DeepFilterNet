@@ -457,3 +457,22 @@ class DfNet(nn.Module):
             spec_e = spec_e * pf.unsqueeze(-1)
 
         return spec_e, m, lsnr, df_coefs
+
+
+def ut_init_model():
+    model_base_dir = '/Users/donkeyddddd/Library/Caches/DeepFilterNet/DeepFilterNet3'
+    config.load(
+        os.path.join(model_base_dir, "config.ini"),
+        config_must_exist=True,
+        allow_defaults=True,
+        allow_reload=True,
+    )
+
+    tmp_model = init_model()
+    tmp_model.to(memory_format=torch.channels_last)
+    xxx = 1
+
+
+if __name__=="__main__":
+    ut_init_model()
+    xxx = 1

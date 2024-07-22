@@ -15,6 +15,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
+from df.deepfilternet3 import init_model
 from df.checkpoint import load_model as load_model_cp
 from df.config import config
 from df.io import load_audio, resample, save_audio
@@ -148,12 +149,14 @@ def init_df(
     # init_logger(file=log_file, level=log_level, model=model_base_dir)
     # if use_default_model:
     #     logger.info(f"Using {default_model} model at {model_base_dir}")
+    
     config.load(
         os.path.join(model_base_dir, "config.ini"),
         config_must_exist=True,
         allow_defaults=config_allow_defaults,
         allow_reload=True,
     )
+    
     # if post_filter:
         # config.set("mask_pf", True, bool, ModelParams().section)
         # try:
@@ -177,7 +180,7 @@ def init_df(
         nb_bands=32,
         min_nb_erb_freqs=2,
     )
-    checkpoint_dir = os.path.join(model_base_dir, "checkpoints")
+    # checkpoint_dir = os.path.join(model_base_dir, "checkpoints")
     # load_cp = epoch is not None and not (isinstance(epoch, str) and epoch.lower() == "none")
     # if not load_cp:
     #     checkpoint_dir = None
@@ -185,19 +188,26 @@ def init_df(
     #     "mask_only", cast=bool, section="train", default=False, save=False
     # )
     # model, epoch = load_model_cp(checkpoint_dir, df_state, epoch=epoch, mask_only=mask_only)
-    model, epoch = load_model_cp(checkpoint_dir, df_state, epoch=epoch, mask_only=False)
+    # model, epoch = load_model_cp(checkpoint_dir, df_state, epoch=epoch, mask_only=False)
+    model = init_model(df_state)
+    latest = torch.load("/Users/donkeyddddd/Library/Caches/DeepFilterNet/DeepFilterNet3/checkpoints/model_120.ckpt.best", map_location="cpu")
+    latest = {k.replace("clc", "df"): v for k, v in latest.items()}
+    model.load_state_dict(latest, strict=False)
+    model.to(memory_format=torch.channels_last)
+    
     # if (epoch is None or epoch == 0) and load_cp:
     #     logger.error("Could not find a checkpoint")
     #     exit(1)
     # logger.debug(f"Loaded checkpoint from epoch {epoch}")
     model = model.to(get_device())
     # Set suffix to model name
-    suffix = os.path.basename(os.path.abspath(model_base_dir))
+    # suffix = os.path.basename(os.path.abspath(model_base_dir))
     # if post_filter:
     #     suffix += "_pf"
     # logger.info("Running on device {}".format(get_device()))
     # logger.info("Model loaded")
-    return model, df_state, suffix, epoch
+    # return model, df_state, suffix, epoch
+    return model, df_state
 
 
 def df_features(audio: Tensor, df: DF, nb_df: int, device=None) -> Tuple[Tensor, Tensor, Tensor]:
@@ -394,8 +404,9 @@ def enhance(
 
 def ut():
     
-    model, df_state, model_name, model_epoch = init_df()
-    print(model_name, "||", model_epoch)
+    # model, df_state, model_name, model_epoch = init_df()
+    model, df_state = init_df()
+    # print(model_name, "||", model_epoch)
     
     audio_path = "/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk.wav"
     audio, _ = load_audio(audio_path, sr=df_state.sr())
