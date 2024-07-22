@@ -1,3 +1,6 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import warnings
 from collections import defaultdict
 from typing import Dict, Final, Iterable, List, Literal, Optional, Tuple, Union

@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import argparse
 import glob
 import os
@@ -223,8 +227,8 @@ def enhance(
     """
     model.eval()
     bs = audio.shape[0]
-    if hasattr(model, "reset_h0"):
-        model.reset_h0(batch_size=bs, device=get_device())
+    # if hasattr(model, "reset_h0"):
+    #     model.reset_h0(batch_size=bs, device=get_device())
     orig_len = audio.shape[-1]
     n_fft, hop = 0, 0
     if pad:
@@ -235,9 +239,9 @@ def enhance(
     spec, erb_feat, spec_feat = df_features(audio, df_state, nb_df, device=get_device())
     enhanced = model(spec.clone(), erb_feat, spec_feat)[0].cpu()
     enhanced = as_complex(enhanced.squeeze(1))
-    if atten_lim_db is not None and abs(atten_lim_db) > 0:
-        lim = 10 ** (-abs(atten_lim_db) / 20)
-        enhanced = as_complex(spec.squeeze(1).cpu()) * lim + enhanced * (1 - lim)
+    # if atten_lim_db is not None and abs(atten_lim_db) > 0:
+    #     lim = 10 ** (-abs(atten_lim_db) / 20)
+    #     enhanced = as_complex(spec.squeeze(1).cpu()) * lim + enhanced * (1 - lim)
     audio = torch.as_tensor(df_state.synthesis(enhanced.numpy()))
     if pad:
         # The frame size is equal to p.hop_size. Given a new frame, the STFT loop requires e.g.
@@ -379,5 +383,18 @@ def run():
     main(args)
 
 
+def ut():
+    audio_path = "/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk.wav"
+    model, df_state, model_name, model_epoch = init_df()
+    print(model_name, "||", model_epoch)
+    audio, _ = load_audio(audio_path, sr=df_state.sr())
+    # Denoise the audio
+    enhanced = enhance(model, df_state, audio)
+    save_audio("/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/result_noise_car_talk.wav", enhanced, df_state.sr())
+
+    xxx = 1
+
+
 if __name__ == "__main__":
-    run()
+    # run()
+    ut()
