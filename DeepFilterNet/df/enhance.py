@@ -142,8 +142,8 @@ def init_df(
     # use_default_model = model_base_dir is None or model_base_dir in PRETRAINED_MODELS
     # model_base_dir = get_model_basedir(model_base_dir or default_model)
 
-    if not os.path.isdir(model_base_dir):
-        raise NotADirectoryError("Base directory not found at {}".format(model_base_dir))
+    # if not os.path.isdir(model_base_dir):
+        # raise NotADirectoryError("Base directory not found at {}".format(model_base_dir))
     # log_file = os.path.join(model_base_dir, log_file) if log_file is not None else None
     # init_logger(file=log_file, level=log_level, model=model_base_dir)
     # if use_default_model:
@@ -162,13 +162,20 @@ def init_df(
         # except KeyError:
         #     beta = ""
         # logger.info(f"Running with post-filter {beta}")
-    p = ModelParams()
+    # p = ModelParams()
+    # df_state = DF(
+    #     sr=p.sr,
+    #     fft_size=p.fft_size,
+    #     hop_size=p.hop_size,
+    #     nb_bands=p.nb_erb,
+    #     min_nb_erb_freqs=p.min_nb_freqs,
+    # )
     df_state = DF(
-        sr=p.sr,
-        fft_size=p.fft_size,
-        hop_size=p.hop_size,
-        nb_bands=p.nb_erb,
-        min_nb_erb_freqs=p.min_nb_freqs,
+        sr=48000,
+        fft_size=960,
+        hop_size=480,
+        nb_bands=32,
+        min_nb_erb_freqs=2,
     )
     checkpoint_dir = os.path.join(model_base_dir, "checkpoints")
     # load_cp = epoch is not None and not (isinstance(epoch, str) and epoch.lower() == "none")
