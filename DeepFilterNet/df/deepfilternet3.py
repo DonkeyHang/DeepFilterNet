@@ -81,11 +81,14 @@ class ModelParams(DfParams):
 
 
 def init_model(df_state: Optional[DF] = None, run_df: bool = True, train_mask: bool = True):
-    p = ModelParams()
+    # p = ModelParams()
     if df_state is None:
-        df_state = DF(sr=p.sr, fft_size=p.fft_size, hop_size=p.hop_size, nb_bands=p.nb_erb)
-    erb = erb_fb(df_state.erb_widths(), p.sr, inverse=False)
-    erb_inverse = erb_fb(df_state.erb_widths(), p.sr, inverse=True)
+        # df_state = DF(sr=p.sr, fft_size=p.fft_size, hop_size=p.hop_size, nb_bands=p.nb_erb)
+        df_state = DF(sr=48000, fft_size=960, hop_size=480, nb_bands=32)
+    # erb = erb_fb(df_state.erb_widths(), p.sr, inverse=False)
+    # erb_inverse = erb_fb(df_state.erb_widths(), p.sr, inverse=True)
+    erb = erb_fb(df_state.erb_widths(), 48000, inverse=False)
+    erb_inverse = erb_fb(df_state.erb_widths(), 48000, inverse=True)
     model = DfNet(erb, erb_inverse, run_df, train_mask)
     return model.to(device=get_device())
 
@@ -409,8 +412,8 @@ class DfNet(nn.Module):
         """
         feat_spec = feat_spec.squeeze(1).permute(0, 3, 1, 2)
 
-        feat_erb = self.pad_feat(feat_erb)
-        feat_spec = self.pad_feat(feat_spec)
+        # feat_erb = self.pad_feat(feat_erb)
+        # feat_spec = self.pad_feat(feat_spec)
         e0, e1, e2, e3, emb, c0, lsnr = self.enc(feat_erb, feat_spec)
 
         if self.lsnr_droput:
