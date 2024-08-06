@@ -10,14 +10,12 @@ import warnings
 from typing import List, Optional, Tuple, Union
 from tqdm import tqdm
 
-# from audio import read, write
-# from cpx import CPX
+from audio import read, write
+from cpx import CPX
 from erb import ERB
-# from spectrum import spectrogram, erbgram
-# from stft import STFT
+from stft import STFT
 import numpy as np
-# import matplotlib.pyplot as plot
-# from erb_self import ERB_self
+
 
 import torch
 from loguru import logger
@@ -39,6 +37,7 @@ from libdf import DF, erb, erb_norm, unit_norm
 
 PRETRAINED_MODELS = ("DeepFilterNet", "DeepFilterNet2", "DeepFilterNet3")
 DEFAULT_MODEL = "DeepFilterNet3"
+FFT_SIZE = 960
 
 
 # class AudioDataset(Dataset):
@@ -189,7 +188,7 @@ def init_df(
         fft_size=960,
         hop_size=480,
         nb_bands=32,
-        min_nb_erb_freqs=2,
+        min_nb_erb_freqs=1,
     )
     # checkpoint_dir = os.path.join(model_base_dir, "checkpoints")
     # load_cp = epoch is not None and not (isinstance(epoch, str) and epoch.lower() == "none")
@@ -221,13 +220,64 @@ def init_df(
     return model, df_state
 
 
+def erb_fb_function(widths: np.ndarray, sr: int, normalized: bool = True, inverse: bool = False) -> Tensor:
+    n_freqs = int(np.sum(widths))
+    all_freqs = torch.linspace(0, sr // 2, n_freqs + 1)[:-1]
+
+    b_pts = np.cumsum([0] + widths.tolist()).astype(int)[:-1]
+
+    fb = torch.zeros((all_freqs.shape[0], b_pts.shape[0]))
+    for i, (b, w) in enumerate(zip(b_pts.tolist(), widths.tolist())):
+        fb[b : b + w, i] = 1
+    # Normalize to constant energy per resulting band
+    if inverse:
+        fb = fb.t()
+        if not normalized:
+            fb /= fb.sum(dim=1, keepdim=True)
+    else:
+        if normalized:
+            fb /= fb.sum(dim=0)
+    return fb.to(device=get_device())
+
+
+
 def df_features(audio: Tensor, df: DF, nb_df: int, device=None) -> Tuple[Tensor, Tensor, Tensor]:
     spec = df.analysis(audio.numpy())  # [C, Tf] -> [C, Tf, F]
     a = get_norm_alpha(False)
     erb_fb = df.erb_widths()
+
+    # =====
+    # my_erb_calc = ERB(
+    #     samplerate=48000,
+    #     fftsize=960,
+    #     erbsize=32,
+    #     minwidth=1,
+    #     alpha=0.99)
+    # widths = my_erb_calc.get_band_widths(48000,960,32,1)
+    # weights = my_erb_calc.get_band_weights(48000,widths)
+
+    # =====
+
+
+    # ======
+    # x = np.abs(spec) # TODO try np.absolute with 10*log10 instead
+    # y = np.matmul(x, weights)
+    # y = 10 * np.log10(y + np.finfo(spec.dtype).eps)
+
+    # TODO ISSUE #100
+    # mean = np.full(y.shape[-1], y[..., 0, :])
+    # alpha = 0.99
+    # for i in range(y.shape[-2]):
+    #     mean = y[..., i, :] * (1 - alpha) + mean * alpha
+    #     y[..., i, :] -= mean
+    # y /= 40
+    # ======
+
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         erb_feat = torch.as_tensor(erb_norm(erb(spec, erb_fb), a)).unsqueeze(1)
+
     spec_feat = as_real(torch.as_tensor(unit_norm(spec[..., :nb_df], a)).unsqueeze(1))
     spec = as_real(torch.as_tensor(spec).unsqueeze(1))
     if device is not None:
@@ -458,20 +508,25 @@ def ut():
 
     res_tensor = torch.tensor([])
 
-    for idx in tqdm(range(audio_num)):
-        tmp_audio = audio[0,idx*480:idx*480+block_len].unsqueeze(0)
+    # for idx in tqdm(range(audio_num)):
+    #     tmp_audio = audio[0,idx*480:idx*480+block_len].unsqueeze(0)
         
-        res_enhanced = enhance_diy(model, df_state, tmp_audio)
+    #     res_enhanced = enhance_diy(model, df_state, tmp_audio)
         
-        output_res = (overlap_cache[:,0:480] + res_enhanced[:,0:480])
-        res_tensor = torch.cat((res_tensor,output_res),dim=1)
-        overlap_cache = overlap_cache[:] + res_enhanced[:,480:]
+    #     output_res = (overlap_cache[:,0:480] + res_enhanced[:,0:480])
+    #     res_tensor = torch.cat((res_tensor,output_res),dim=1)
+    #     overlap_cache = overlap_cache[:] + res_enhanced[:,480:]
         # print(res_tensor.shape)
 
     
 
     # Denoise the audio
-    # enhanced = enhance(model, df_state, audio)
+    idx=0
+    block_len=480
+    tmp_audio = audio[0,idx*480:idx*480+block_len].unsqueeze(0)
+    tmp_audio = tmp_audio*0+1
+    tmp_audio = F.pad(tmp_audio,(480,0),"constant",0)
+    enhanced = enhance(model, df_state, tmp_audio,pad=False)
     
     
 
@@ -482,38 +537,57 @@ def ut():
     xxx = 1
 
 
-def make_sine():
-    import numpy as np
-    import soundfile as sf
-    freq = 1234.0
-    res = []
-    phase = 0
-    for idx in range(480*2):
-        res.append(np.sin(2.0*np.pi*freq*idx/48000.0))
+# def make_sine():
+#     import numpy as np
+#     import soundfile as sf
+#     freq = 1234.0
+#     res = []
+#     phase = 0
+#     for idx in range(480*2):
+#         res.append(np.sin(2.0*np.pi*freq*idx/48000.0))
     
-    sf.write("/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/sine_20ms_1234hz.wav",res,48000)
+#     sf.write("/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/sine_20ms_1234hz.wav",res,48000)
     
-    import matplotlib.pyplot as plt
-    plt.figure(1)
-    plt.plot(res)
-    plt.show()
+#     import matplotlib.pyplot as plt
+#     plt.figure(1)
+#     plt.plot(res)
+#     plt.show()
 
-    xxx = 1
+#     xxx = 1
 
 
 def vorbis_window(n):
-    indices = torch.arange(n, dtype=torch.float32)
-    window = torch.sin((torch.pi / 2.0) * torch.pow(torch.sin(indices / float(n) * torch.pi), 2.0))
+    indices = torch.arange(n, dtype=torch.float64) + 0.5
+    n_double = torch.tensor(n, dtype=torch.float64)
+    window = torch.sin((torch.pi / 2.0) * torch.pow(torch.sin(indices / n_double * torch.pi), 2.0))
+    
     return window
 
 
 def analysis(audio, n_fft, hop):
-        stft_norm = 1 / (n_fft ** 2 / (2 * hop))
-        spec = torch.stft(
+        stft_norm = np.float32(1.0 / n_fft)
+        spec_float = torch.stft(
                     audio, n_fft=n_fft, hop_length=hop, window=vorbis_window(n_fft),
-                    return_complex=True, normalized=False, center=False
+                    return_complex=False, normalized=False, center=False
                 ).transpose(1, 2) * stft_norm
-        return spec
+        # spec_float = torch.stft(
+        #     audio, n_fft=n_fft, hop_length=hop, window=torch.hann_window(n_fft),
+        #     return_complex=False, normalized=False, center=False
+        # ).transpose(1, 2) * stft_norm
+        spec_cplx = torch.view_as_complex(spec_float)
+        spec_float = spec_float.unsqueeze(0).to(torch.float32)
+        return spec_float,spec_cplx
+
+
+def analysis_fft(audio, vorbis_win):
+    assert(max(audio.shape)==FFT_SIZE)
+    fft_norm = np.float32(1.0 / FFT_SIZE)
+    tmp_torch_cplx = torch.fft.rfft( torch.as_tensor(audio) * vorbis_win ,n=FFT_SIZE ) * fft_norm
+    real_part = tmp_torch_cplx.real
+    imag_part = tmp_torch_cplx.imag
+    tmp_torch_float = torch.cat((real_part.unsqueeze(-1), imag_part.unsqueeze(-1)), dim=-1).unsqueeze(0).unsqueeze(0)
+    tmp_torch_cplx = tmp_torch_cplx.unsqueeze(0)
+    return tmp_torch_float.to(torch.float32), tmp_torch_cplx
 
 
 def erb_function(spec, erb_m, db=True):
@@ -540,6 +614,7 @@ def ut_analysis_spec(audio, df):
 
     xxx = 1
 
+
 def band_mean_norm_erb( xs, state, alpha):
     state = xs * (1. - alpha) + state * alpha
     xs = (xs - state) / 40.0
@@ -554,6 +629,7 @@ def my_erb_norm(erb_log, alpha=0.99):
     for f_channel in range(erb_log.shape[0]):
         for in_step in range(erb_log.shape[1]):
             norm_erb[f_channel, in_step, :], state = band_mean_norm_erb(erb_log[f_channel, in_step, :], state, alpha)
+    norm_erb = torch.as_tensor(norm_erb).unsqueeze(0).to(torch.float32)
     return norm_erb
 
 
@@ -580,7 +656,7 @@ def my_spec_norm(spec,alpha=0.99):
     for f_channel in range(spec.shape[0]):
         for in_step in range(spec.shape[1]):
             norm_unit, state = band_unit_norm(spec[f_channel, in_step, :], state, alpha)
-
+    norm_unit = torch.as_tensor(norm_unit).unsqueeze(0).unsqueeze(0).unsqueeze(0).to(torch.float32)
     return norm_unit
 
 
@@ -636,10 +712,10 @@ def ut_erb_and_spec_feat(audio,df):
 
     spec = df.analysis(audio.numpy()) 
     # audio -> spec
-    spec_ = analysis(tmp_audio, 960, 480)
+    spec_,spec_cplx = analysis(tmp_audio, 960, 480)
     print("==========PART A START==================\n")
-    print("origin spec: \n",spec[:,:,0:20])
-    print("my spec: \n",spec_[:,:,0:20])
+    print("origin spec: \n",spec[:,:,0:10])
+    print("my spec: \n",spec_[:,:,0:10])
     print("==========PART A END==================\n")
 
     #origin df
@@ -667,14 +743,61 @@ def ut_erb_and_spec_feat(audio,df):
     #spec feat
     df_spec_feat = as_real(torch.as_tensor(unit_norm(spec[..., :96], a)).unsqueeze(1))
     print("==========PART C START==================\n")
-    print("origin df spec feat: \n",df_spec_feat[:,:,:,0:96,:])
+    print("origin df spec feat: \n",df_spec_feat[:,:,:,0:10,:])
 
     my_spec_feat = my_spec_norm(spec)
-    print("my spec feat: \n",my_spec_feat[0:96,:])
+    print("my spec feat: \n",my_spec_feat[0:10,:])
     print("==========PART C END==================\n")
 
 
     xxx = 1
+
+
+def ut_fft_ifft_():
+    import matplotlib.pyplot as plt
+
+    audio = np.ones((1,480))
+    tmp_audio = np.concatenate((np.zeros((1,480)), audio),axis=1)
+
+    vorbis_win = vorbis_window(960)
+    FFT_SIZE = 960
+
+    #numpy rfft and irfft
+    tmp_np_fft = np.fft.rfft(tmp_audio*vorbis_win.numpy(),n=FFT_SIZE)/FFT_SIZE
+    tmp_np_ifft = np.fft.irfft(tmp_np_fft,n=FFT_SIZE)*FFT_SIZE
+
+
+    #torch rfft and irfft
+    tmp_torch_fft = torch.fft.rfft( torch.as_tensor(tmp_audio) * vorbis_win ,n=FFT_SIZE ) / FFT_SIZE
+    tmp_torch_ifft = torch.fft.irfft( tmp_torch_fft, n=FFT_SIZE ) * FFT_SIZE
+
+
+    #torch stft and istft
+    tmp_torch_stft = torch.stft(
+                    torch.as_tensor(tmp_audio), n_fft=FFT_SIZE, hop_length=480, window=vorbis_window(FFT_SIZE),
+                    return_complex=True, normalized=False, center=False
+                ).transpose(1, 2) / FFT_SIZE
+    tmp_torch_stft_ifft = torch.fft.irfft( tmp_torch_stft,n=FFT_SIZE ) * FFT_SIZE
+
+
+    #df analysis
+    model,state = init_df()
+    fft = state.analysis(np.float32(tmp_audio))
+
+
+    plt.figure(1)
+    # plt.plot(tmp_np_ifft[0,:])
+    plt.plot(tmp_torch_ifft[0,:].numpy())
+    plt.plot(vorbis_win.numpy())
+    # plt.plot(tmp_np_ifft[0,:] - tmp_torch_stft_ifft[0,0,:].numpy())
+
+    plt.plot()
+
+    plt.show()
+
+
+    xxx = 1
+
 
 
 def ut2():
@@ -709,9 +832,492 @@ def ut2():
 
 
 
+
+
+
+
+def ut3():
+    # test my feature push in model and result
+
+    #define variable
+    NB_DF = 96
+    FFT_SIZE = 960
+
+    # init model
+    model, state = init_df()
+    model.eval()
+
+    # load wav
+    audio_path = "/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk.wav"
+    # audio_path = "/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/sine_20ms_1234hz.wav"
+    # audio, _ = load_audio(audio_path, sr=48000)
+    audio,sr = ta.load(audio_path)
+    
+
+    audio_num = 1
+
+    # init my_feat
+    my_erb_calc = ERB(
+        samplerate=48000,
+        fftsize=960,
+        erbsize=32,
+        minwidth=1,
+        alpha=0.99)
+    widths = my_erb_calc.get_band_widths(48000,960,32,1)
+    erb_matrix = erb_fb_function(widths,48000)
+    weights = my_erb_calc.get_band_weights(48000,widths)
+
+
+    # processBlock
+    for idx in range(audio_num):
+        tmp_audio = audio[:,idx*480:(idx+1)*480]
+        tmp_pad_audio = F.pad(tmp_audio,(480,0),"constant",0)
+
+        # origin df erb&spec feature
+        df_spec = state.analysis(tmp_audio.numpy()) 
+        df_spec_res, df_erb_feat, df_spec_feat = df_features(tmp_audio, state, NB_DF, device=get_device())
+        # print("df_spec_res.shape:",df_spec_res.shape)
+        # print("df_erb_feat.shape:",df_erb_feat.shape)
+        # print("df_spec_feat.shape:",df_spec_feat.shape)
+        df_enhanced = model(df_spec_res.clone(), df_erb_feat, df_spec_feat)[0].cpu()
+        df_enhanced_cplx = torch.view_as_complex(df_enhanced)
+        df_enhanced_ifft = torch.fft.irfft(df_enhanced_cplx,n=FFT_SIZE)*FFT_SIZE
+        
+
+
+        # my erb&spec feature
+        # my_spec_float, my_spec_cplx = analysis(tmp_pad_audio, 960, 480)
+        spec = torch.as_tensor(state.analysis(tmp_audio.numpy())).unsqueeze(0).to(torch.float32)
+        my_erb_feat = torch.matmul(spec.abs(), erb_matrix)
+        my_spec_feat = my_spec_norm(my_spec_cplx)
+        # my_erb_feat = erb_function(my_spec_cplx, weights)
+        # my_erb_feat = my_erb_norm(my_erb_feat,0.99)
+        # my_erb_feat = torch.matmul(my_spec_cplx.unsqueeze(0).abs().square().to(torch.float32), erb_matrix)
+        # my_spec_feat = my_spec_norm(my_spec_cplx)
+        # print("my_spec_float.shape:",my_spec_float.shape)
+        # print("my_erb_feat.shape:",my_erb_feat.shape)
+        # print("my_spec_feat.shape:",my_spec_feat.shape)
+        my_enhanced = model(my_spec_float, my_erb_feat, my_spec_feat)[0].cpu()
+        my_enhanced_cplx = torch.view_as_complex(my_enhanced)
+        my_enhanced_ifft = torch.fft.irfft(my_enhanced_cplx,n=FFT_SIZE)*FFT_SIZE
+        
+
+        print("========================================\n")
+        # ok
+        print("origin spec: \n",df_spec[:,:,0:10])
+        # print("origin spec view_as_real:\n",df_spec_res[:,:,:,0:10])
+        print("my spec: \n",my_spec_float[:,:,:,0:10])
+        # print("========================================\n")
+        # had a little diff
+        print("origin df erb_feat: \n",df_erb_feat)
+        print("my erb feat: \n",my_erb_feat)
+        # print("========================================\n")
+        # ok
+        print("origin df spec feat: \n",df_spec_feat[:,:,:,0:10,:])
+        print("my spec feat: \n",my_spec_feat[:,:,:,0:10,:])
+        print("========================================\n")
+        # ok
+        print("df_enhanced: \n",df_enhanced[:,:,:,0:10,:])
+        print("my_enhanced: \n",my_enhanced[:,:,:,0:10,:])
+        print("========================================\n")
+
+        print("df_enhanced_cplx: \n",df_enhanced_cplx[:,:,:,0:20])
+        print("my_enhanced_cplx: \n",my_enhanced_cplx[:,:,:,0:20])
+        print("========================================\n")
+        
+        print("df_enhanced_ifft: \n",df_enhanced_ifft[:,:,:,0:20])
+        print("my_enhanced_ifft: \n",my_enhanced_ifft[:,:,:,0:20])
+        print("========================================\n")
+
+        xxx = 1
+
+
+
+
+
+def ut4():
+    # test overlap mode and run model in a little diff in erb
+    import matplotlib.pyplot as plt
+
+    # define variable
+    NB_DF           = 96
+    AUDIO_SIZE_10ms = 480
+    FFT_SIZE        = 960
+    HOP_SIZE        = 480
+    ERB_SIZE        = 32
+    MIN_WIDTH       = 2
+    SAMPLERATE      = 48000
+    ALPHA           = 0.99
+
+    # load audio
+    audio_path = "/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk.wav"
+    audio,sr = ta.load(audio_path)
+    # audio = audio[:,0:SAMPLERATE*5]*0+1
+
+    AUDIO_NUM = max(audio.shape)//480-1
+    output = torch.zeros((1,AUDIO_NUM*AUDIO_SIZE_10ms))
+    output_df = torch.zeros((1,AUDIO_NUM*AUDIO_SIZE_10ms))
+
+    # init model
+    model, state = init_df()
+    model.eval()
+
+    # init erb
+    my_erb_calc = ERB(
+        samplerate=SAMPLERATE,
+        fftsize=FFT_SIZE,
+        erbsize=ERB_SIZE,
+        minwidth=MIN_WIDTH,
+        alpha=ALPHA)
+    widths = my_erb_calc.get_band_widths(SAMPLERATE,FFT_SIZE,ERB_SIZE,MIN_WIDTH)
+    weights = my_erb_calc.get_band_weights(SAMPLERATE,widths)
+
+    # init overlap buffer
+    process_buffer_960 = torch.zeros((1,FFT_SIZE))
+    tmp_audio = torch.zeros((1,AUDIO_SIZE_10ms))
+    cache_buffer = torch.zeros((1,AUDIO_SIZE_10ms))
+    cache_buffer_df = torch.zeros((1,AUDIO_SIZE_10ms))
+
+    # init FIR window
+    vorbis_win = vorbis_window(FFT_SIZE)
+
+    # df result
+    # df_enhanced = enhance(model, state, audio, pad=False)
+    df_spec, df_erb_feat, df_spec_feat = df_features(audio[:,:AUDIO_NUM*AUDIO_SIZE_10ms], state, NB_DF, device=get_device())
+    # output_df[:,idx*AUDIO_SIZE_10ms:(idx+1)*AUDIO_SIZE_10ms] = df_enhanced
+
+
+    for idx in tqdm(range(AUDIO_NUM)):
+        tmp_audio = audio[:,idx*AUDIO_SIZE_10ms:(idx+1)*AUDIO_SIZE_10ms].clone()
+        process_buffer_960[:,:AUDIO_SIZE_10ms] = process_buffer_960[:,AUDIO_SIZE_10ms:].clone()
+        process_buffer_960[:,AUDIO_SIZE_10ms:AUDIO_SIZE_10ms*2] = tmp_audio.clone()
+
+        # my_spec_float, my_spec_cplx = analysis(process_buffer_960, FFT_SIZE, HOP_SIZE)
+        my_spec_float, my_spec_cplx = analysis_fft(process_buffer_960, vorbis_win)
+        my_erb_feat = erb_function(my_spec_cplx, weights)
+        my_erb_feat = my_erb_norm(my_erb_feat,ALPHA)
+        my_spec_feat = my_spec_norm(my_spec_cplx)
+
+        df_spec_float_tmp = df_spec[:,:,idx,:,:].unsqueeze(0)
+        df_erb_feat_tmp = df_erb_feat[:,:,idx,:].unsqueeze(0)
+        df_spec_feat_tmp = df_spec_feat[:,:,idx,:,:].unsqueeze(0)
+
+        # print("my_spec_float:\n",my_spec_float[:,:,:,0:10,:])
+        # print("df_spec_float:\n",df_spec_float_tmp[:,:,:,0:10,:])
+        print("my_erb_feat:\n",my_erb_feat[:,:,:,0:10])
+        print("df_erb_feat:\n",df_erb_feat_tmp[:,:,:,0:10])
+        print("my_spec_feat:\n",my_spec_feat[:,:,:,0:10,:])
+        print("df_spec_feat:\n",df_spec_feat_tmp[:,:,:,0:10,:])
+
+        # model process
+        my_enhanced = model(my_spec_float, my_erb_feat, my_spec_feat)[0].cpu()
+        df_enhanced = model(df_spec_float_tmp, df_erb_feat_tmp, df_spec_feat_tmp)[0].cpu()
+        
+        my_enhanced_cplx = torch.view_as_complex(my_enhanced)
+        my_enhanced_ifft = torch.fft.irfft(my_enhanced_cplx,n=FFT_SIZE)*FFT_SIZE
+        # my_enhanced_ifft = torch.fft.irfft(my_spec_cplx,n=FFT_SIZE)*FFT_SIZE
+        df_enhanced_cplx = torch.view_as_complex(df_enhanced)
+        df_enhanced_ifft = torch.fft.irfft(df_enhanced_cplx,n=FFT_SIZE)*FFT_SIZE
+
+        # output: result[0:480]+cahce
+        output[:,idx*AUDIO_SIZE_10ms:(idx+1)*AUDIO_SIZE_10ms] = cache_buffer + my_enhanced_ifft[0,0,:,0:AUDIO_SIZE_10ms]
+        # output[:,idx*AUDIO_SIZE_10ms:(idx+1)*AUDIO_SIZE_10ms] = cache_buffer + my_enhanced_ifft[0,:,0:AUDIO_SIZE_10ms]
+        # updaye cahce: result[480:960]
+        cache_buffer = my_enhanced_ifft[0,0,:,AUDIO_SIZE_10ms:].clone()
+        # cache_buffer = my_enhanced_ifft[0,:,AUDIO_SIZE_10ms:].clone()
+
+        output_df[:,idx*AUDIO_SIZE_10ms:(idx+1)*AUDIO_SIZE_10ms] = cache_buffer_df + df_enhanced_ifft[0,0,:,0:AUDIO_SIZE_10ms]
+        cache_buffer_df = df_enhanced_ifft[0,0,:,AUDIO_SIZE_10ms:].clone()
+
+
+    
+
+    # plt.figure(1)
+    # plt.plot(audio[0,:].detach().numpy())
+    # plt.plot(df_enhanced[0,:].detach().numpy())
+    # plt.plot(output[0,:].detach().numpy())
+    # plt.show()
+
+
+    save_path = "/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/my_process_result.wav"
+    ta.save(save_path,output,SAMPLERATE)
+    save_path2 = "/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/df_process_result.wav"
+    ta.save(save_path2,output_df,SAMPLERATE)
+
+
+    print("process finished")
+    xxx = 1
+
+
+def test_df_erb_and_erb_function():
+    #define variable
+    NB_DF = 96
+    FFT_SIZE = 960
+
+    # init model
+    model, state = init_df()
+    model.eval()
+
+
+    # init my_erb_matrix
+    my_erb_calc = ERB(
+        samplerate=48000,
+        fftsize=960,
+        erbsize=32,
+        minwidth=1,
+        alpha=0.99)
+    widths = my_erb_calc.get_band_widths(48000,960,32,1)
+    erb_matrix = erb_fb_function(widths,48000)
+
+    # input
+    # audio = torch.randn((1,1,1,960),dtype=torch.float32)
+    spec = torch.randn((1, 1, 1, 481), dtype=torch.complex64)
+
+    # df erb res
+    # df_state = DF(sr=48000, fft_size=960, hop_size=480, nb_bands=32)
+    # erb_matrix = erb_fb_function(df_state.erb_widths(), 48000)
+    
+    df_erb_fb = state.erb_widths()
+    # df_erb_fb = df_state.erb_widths()
+    df_erb = torch.as_tensor(erb(spec.squeeze(0).numpy(), df_erb_fb))
+    df_erb_feat = torch.as_tensor(erb_norm(df_erb.numpy() ,0.99))
+
+    # my erb res
+    my_erb_feat = torch.matmul(spec.abs().square(), erb_matrix)
+
+    xxx = 1
+
+
+def filter_RT_2frame(model, all_model , audio):
+    cpu = torch.device('cpu')
+
+    param_sr = 48000
+    param_fft_size = 960
+    param_hop_size = 480
+    param_fft_bins = 481
+    param_erb_bins = 32
+    param_erb_min_width = 2
+    param_deep_filter_bins = 96
+    param_norm_alpha = 0.99
+
+    assert getattr(model, 'freq_bins', param_fft_bins) == param_fft_bins
+    assert getattr(model, 'erb_bins', param_erb_bins) == param_erb_bins
+    assert getattr(model, 'nb_df', getattr(model, 'df_bins', param_deep_filter_bins)) == param_deep_filter_bins
+    # assert state.sr() == param_sr
+    # assert len(state.erb_widths()) == param_erb_bins
+
+    print(dict(
+        sr=param_sr,
+        fft_size=param_fft_size,
+        hop_size=param_hop_size,
+        fft_bins=param_fft_bins,
+        erb_bins=param_erb_bins,
+        erb_min_width=param_erb_min_width,
+        deep_filter_bins=param_deep_filter_bins,
+        norm_alpha=param_norm_alpha))
+
+    stft = STFT(
+        framesize=param_fft_size,
+        hopsize=param_hop_size,
+        window='vorbis')
+
+    erb = ERB(
+        samplerate=param_sr,
+        fftsize=param_fft_size,
+        erbsize=param_erb_bins,
+        minwidth=param_erb_min_width,
+        alpha=param_norm_alpha)
+
+    cpx = CPX(
+        cpxsize=param_deep_filter_bins,
+        alpha=param_norm_alpha)
+    
+    # =======================
+    all_erb = ERB(
+        samplerate=param_sr,
+        fftsize=param_fft_size,
+        erbsize=param_erb_bins,
+        minwidth=param_erb_min_width,
+        alpha=param_norm_alpha)
+
+    all_cpx = CPX(
+        cpxsize=param_deep_filter_bins,
+        alpha=param_norm_alpha)
+    # =======================
+    
+    audio_num = audio.__len__()//480
+
+    input_buffer_1440 = np.zeros(480*3)
+    # cache_1440 = np.zeros(480*3)
+    cache_480 = np.zeros(480)
+    res = np.zeros((audio_num+1)*480)
+
+    # =====================================
+    # all audio stft
+    pad_0_audio = np.pad(audio,(480,0))
+    # xxxx = np.linspace(0,480*3,480*3)
+    all_stft = stft.stft(pad_0_audio)
+    # xxxxx = stft.istft(all_stft)
+    all_real_part = all_stft.real
+    all_imaginary_part = all_stft.imag
+    all_combined_array = np.stack((all_real_part, all_imaginary_part), axis=-1)
+    all_spec_float = torch.as_tensor(all_combined_array,dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    
+    x = torch.view_as_complex(all_spec_float).numpy()
+    y = all_erb(x)
+    all_erb_feat = torch.from_numpy(y.astype(np.float32))
+
+    x = torch.view_as_complex(all_spec_float).numpy()
+    y = all_cpx(x)
+    y = np.stack((y.real, y.imag), axis=-1)
+    all_spec_feat = torch.from_numpy(y.astype(np.float32))
+
+    all_output = all_model(all_spec_float, all_erb_feat, all_spec_feat) # orig: spec.clone()
+    all_enhanced = all_output[0].cpu()
+    # print('all_enhanced', all_enhanced.shape, all_enhanced.dtype)
+    all_enhanced = all_enhanced.squeeze(1)
+    # print('all_enhanced squeeze', all_enhanced.shape, all_enhanced.dtype)
+    all_enhanced = torch.view_as_complex(all_enhanced) # orig: as_complex
+    
+    all_cache_480 = np.zeros(480)
+    all_res = np.zeros(480 * (all_enhanced.shape[1]+1))
+    # for idx in range(all_enhanced.shape[1]):
+        # # tmp_ifft_960 = stft.istft(all_enhanced[0,idx,:].detach().numpy())*960
+        # # tmp_ifft_960 = np.fft.irfft(all_enhanced[0,idx,:].detach().numpy())*960
+        # tmp_ifft_960 = np.fft.irfft(all_enhanced[0,idx,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        # all_res[480*idx : 480*(idx+1)] = all_cache_480 + tmp_ifft_960[:480]
+        # all_cache_480 = tmp_ifft_960[480:]
+
+    # =====================================
+
+    write_idx = 0
+
+    # process for half of audio frame num
+    for idx in tqdm(range(audio_num//2)):
+        # push new data into input_buffer
+        input_buffer_1440[:480] = input_buffer_1440[480*2:].copy()
+        input_buffer_1440[480:] = audio[ idx*960:(idx+1)*960 ].copy()
+
+        # spec_floar
+        tmp_spec = stft.stft(input_buffer_1440)
+        real_part = tmp_spec.real
+        imaginary_part = tmp_spec.imag
+        combined_array = np.stack((real_part, imaginary_part), axis=-1)
+        spec_float = torch.as_tensor(combined_array,dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        
+        # print("diff in stft A: ", (all_spec_float[0,0,idx*2,:,:] - spec_float[0,0,0,:,:])[0:10,:])
+        # print("diff in stft B: ", (all_spec_float[0,0,idx*2+1,:,:] - spec_float[0,0,1,:,:])[0:20,:])
+
+        # erb_feat
+        x = torch.view_as_complex(spec_float).numpy()
+        y = erb(x)
+        erb_feat = torch.from_numpy(y.astype(np.float32))
+        # print("diff in erb A: ", (all_erb_feat[0,0,idx*2,:] - erb_feat[0,0,0,:])[0:10])
+        # print("diff in stft B: ", (all_spec_float[0,0,idx*2+1,:,:] - spec_float[0,0,1,:,:])[0:20,:])
+
+        # spec_feat
+        x = torch.view_as_complex(spec_float).numpy()
+        y = cpx(x)
+        y = np.stack((y.real, y.imag), axis=-1)
+        spec_feat = torch.from_numpy(y.astype(np.float32))
+        # print("diff in specfeat A: ", (all_spec_feat[0,0,idx*2,:,:] - spec_feat[0,0,0,:,:])[0:10,:])
+        
+        # model process
+        try:
+            print("diff in stft A: ", (all_spec_float[0,0,idx*2,:,:] - spec_float[0,0,0,:,:])[0:10,:])
+            print("diff in stft B: ", (all_spec_float[0,0,idx*2+1,:,:] - spec_float[0,0,1,:,:])[0:10,:])
+            print("diff in erb A: ", (all_erb_feat[0,0,idx*2,:] - erb_feat[0,0,0,:])[0:10])
+            print("diff in erb B: ", (all_erb_feat[0,0,idx*2+1,:] - erb_feat[0,0,1,:])[0:10])
+            print("diff in specfeat A: ", (all_spec_feat[0,0,idx*2,:,:] - spec_feat[0,0,0,:,:])[0:10,:])
+            print("diff in specfeat B: ", (all_spec_feat[0,0,idx*2+1,:,:] - spec_feat[0,0,1,:,:])[0:10,:])
+            tmp_output = model(spec_float, erb_feat, spec_feat)
+            # tmp_output = model(all_spec_float[:,:,idx*2:idx*2+2,:,:], all_erb_feat[:,:,idx*2:idx*2+2,:], all_spec_feat[:,:,idx*2:idx*2+2,:,:])
+            print("output A spec_float diff: ",all_output[0][0,0,2*idx,0:15,:] - tmp_output[0][0,0,0,0:15,:])
+            print("output B spec_float diff: ",all_output[0][0,0,2*idx+1,0:15,:] - tmp_output[0][0,0,1,0:15,:])
+            # print("tmp_output: ",)
+            
+            # print("now frame[",idx,"] is done")
+        except RuntimeError as e:
+            print("Error during model inference:", e)
+            print("Checking tensor sizes...")
+            raise
+
+
+
+
+        enhanced = tmp_output[0].cpu()
+        # print('enhanced', enhanced.shape, enhanced.dtype)
+        enhanced = enhanced.squeeze(1)
+        # print('enhanced squeeze', enhanced.shape, enhanced.dtype)
+        enhanced = torch.view_as_complex(enhanced) # orig: as_complex
+        
+        # tmp_irfft = stft.istft(enhanced.squeeze(0).detach().numpy())
+
+        #===========
+        # idx in all enhanced
+        all_irfft_partA_960 = np.fft.irfft(all_enhanced[0,2*idx,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        all_irfft_partB_960 = np.fft.irfft(all_enhanced[0,2*idx+1,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        #===========
+
+        # tmp_irfft_partA_960 = np.fft.irfft(all_enhanced[0,2*idx,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        # tmp_irfft_partB_960 = np.fft.irfft(all_enhanced[0,2*idx+1,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        tmp_irfft_partA_960 = np.fft.irfft(enhanced[0,0,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        tmp_irfft_partB_960 = np.fft.irfft(enhanced[0,1,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        
+        print("partA diff:\n ",(all_irfft_partA_960 - tmp_irfft_partA_960)[5:30])
+        print("partB diff:\n ",(all_irfft_partB_960 - tmp_irfft_partB_960)[5:30])
+
+        # res[960*idx : 960*idx+480] = cache_480 + tmp_irfft_partA_960[:480]
+        # cache_480 = tmp_irfft_partA_960[480:].copy()
+        # res[960*idx+480 : 960*(idx+1)] = cache_480 + tmp_irfft_partB_960[:480]
+        # cache_480 = tmp_irfft_partB_960[480:].copy()
+
+        
+        res[write_idx:write_idx+960] += tmp_irfft_partA_960
+        all_res[write_idx:write_idx+960] += all_irfft_partA_960
+        write_idx += 480
+        
+        res[write_idx:write_idx+960] += tmp_irfft_partB_960
+        all_res[write_idx:write_idx+960] += all_irfft_partB_960
+        write_idx += 480
+
+        # res *= 5
+    
+    return res,all_res
+
+
+
+    xxx = 1
+
+
+def ut5():
+    model, state = init_df()
+    model.eval()
+
+    all_model,all_state = init_df()
+    all_model.eval()
+
+    audio, sr = read('/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk.wav', state.sr())
+    audio = np.squeeze(audio,0)
+    # audio = np.linspace(1,48000,48000,dtype=np.float64)
+    
+
+    res, all_res = filter_RT_2frame(model, all_model, audio)
+    write('/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk_Realtime_res.wav', sr, res)
+    write('/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk_all_res.wav', sr, all_res)
+
+
+
+
+
 if __name__ == "__main__":
 
     # make_sine()
     # run()
     # ut()
-    ut2()
+    # ut2()
+    # ut_fft_ifft_()
+    # test_df_erb_and_erb_function()
+    # ut3()
+    # ut4()
+    ut5()

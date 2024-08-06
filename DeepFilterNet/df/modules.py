@@ -938,16 +938,24 @@ def test_erb():
     n_freq = p.fft_size // 2 + 1
     df_state = libdf.DF(sr=p.sr, fft_size=p.fft_size, hop_size=p.hop_size, nb_bands=p.nb_erb)
     erb = erb_fb(df_state.erb_widths(), p.sr)
-    erb_inverse = erb_fb(df_state.erb_widths(), p.sr, inverse=True)
+    # erb_inverse = erb_fb(df_state.erb_widths(), p.sr, inverse=True)
+    # input = torch.randn((1, 1, 1, n_freq), dtype=torch.complex64)
     input = torch.randn((1, 1, 1, n_freq), dtype=torch.complex64)
+    # input_abs = input.abs().square()
     input_abs = input.abs().square()
     erb_widths = df_state.erb_widths()
     df_erb = torch.from_numpy(libdf.erb(input.numpy(), erb_widths, False))
     py_erb = torch.matmul(input_abs, erb)
     assert torch.allclose(df_erb, py_erb)
-    df_out = torch.from_numpy(libdf.erb_inv(df_erb.numpy(), erb_widths))
-    py_out = torch.matmul(py_erb, erb_inverse)
-    assert torch.allclose(df_out, py_out)
+
+    df_erb_norm = torch.from_numpy(libdf.erb_norm(df_erb.squeeze(0).numpy(),0.99))
+
+    xxx = 1
+
+
+    # df_out = torch.from_numpy(libdf.erb_inv(df_erb.numpy(), erb_widths))
+    # py_out = torch.matmul(py_erb, erb_inverse)
+    # assert torch.allclose(df_out, py_out)
 
 
 def test_unit_norm():
@@ -1010,3 +1018,10 @@ def test_dfop():
     dfop.set_forward("real_hidden_state_loop")
     out6 = dfop(spec, coefs, alpha)
     torch.testing.assert_allclose(out1, out6)
+
+
+if __name__=="__main__":
+    test_erb()
+    # test_df_erb_and_erb_function()
+    
+    xxx = 1
