@@ -355,7 +355,8 @@ class DfNet(nn.Module):
         p = ModelParams()
         layer_width = p.conv_ch
         assert p.nb_erb % 8 == 0, "erb_bins should be divisible by 8"
-        self.df_lookahead = p.df_lookahead
+        # self.df_lookahead = p.df_lookahead
+        self.df_lookahead = 0#p.df_lookahead
         self.nb_df = p.nb_df
         self.freq_bins: int = p.fft_size // 2 + 1
         self.emb_dim: int = layer_width * p.nb_erb
@@ -379,6 +380,7 @@ class DfNet(nn.Module):
 
         self.df_order = p.df_order
         self.df_op = MF.DF(num_freqs=p.nb_df, frame_size=p.df_order, lookahead=self.df_lookahead)
+        self.df_op_rt = MF.DFreal(num_freqs=p.nb_df, frame_size=p.df_order)
         self.df_dec = DfDecoder()
         self.df_out_transform = DfOutputReshapeMF(self.df_order, p.nb_df)
 
@@ -445,7 +447,16 @@ class DfNet(nn.Module):
             else:
                 df_coefs = self.df_dec(emb, c0)
             df_coefs = self.df_out_transform(df_coefs)
-            spec_e = self.df_op(spec.clone(), df_coefs)
+
+            # ====================
+            # realtime
+            if(spec.shape[2]==2):
+                spec_e = self.df_op_rt(spec.clone(), df_coefs)
+            # offline
+            else:
+                spec_e = self.df_op(spec.clone(), df_coefs)
+            # ====================
+            
             spec_e[..., self.nb_df :, :] = spec_m[..., self.nb_df :, :]
         else:
             df_coefs = torch.zeros((), device=spec.device)

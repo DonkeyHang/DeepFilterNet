@@ -188,7 +188,7 @@ def init_df(
         fft_size=960,
         hop_size=480,
         nb_bands=32,
-        min_nb_erb_freqs=1,
+        min_nb_erb_freqs=2,
     )
     # checkpoint_dir = os.path.join(model_base_dir, "checkpoints")
     # load_cp = epoch is not None and not (isinstance(epoch, str) and epoch.lower() == "none")
@@ -1172,7 +1172,7 @@ def filter_RT_2frame(model, all_model , audio):
     y = np.stack((y.real, y.imag), axis=-1)
     all_spec_feat = torch.from_numpy(y.astype(np.float32))
 
-    all_output = all_model(all_spec_float, all_erb_feat, all_spec_feat) # orig: spec.clone()
+    all_output = model(all_spec_float, all_erb_feat, all_spec_feat) # orig: spec.clone()
     all_enhanced = all_output[0].cpu()
     # print('all_enhanced', all_enhanced.shape, all_enhanced.dtype)
     all_enhanced = all_enhanced.squeeze(1)
@@ -1308,6 +1308,267 @@ def ut5():
 
 
 
+#==================================================
+# test 20250107
+
+# origin offline is ok
+def filter_originDF_offline(model, audio):
+    cpu = torch.device('cpu')
+
+    param_sr = 48000
+    param_fft_size = 960
+    param_hop_size = 480
+    param_fft_bins = 481
+    param_erb_bins = 32
+    param_erb_min_width = 2
+    param_deep_filter_bins = 96
+    param_norm_alpha = 0.99
+
+    assert getattr(model, 'freq_bins', param_fft_bins) == param_fft_bins
+    assert getattr(model, 'erb_bins', param_erb_bins) == param_erb_bins
+    assert getattr(model, 'nb_df', getattr(model, 'df_bins', param_deep_filter_bins)) == param_deep_filter_bins
+    # assert state.sr() == param_sr
+    # assert len(state.erb_widths()) == param_erb_bins
+
+    print(dict(
+        sr=param_sr,
+        fft_size=param_fft_size,
+        hop_size=param_hop_size,
+        fft_bins=param_fft_bins,
+        erb_bins=param_erb_bins,
+        erb_min_width=param_erb_min_width,
+        deep_filter_bins=param_deep_filter_bins,
+        norm_alpha=param_norm_alpha))
+
+    stft = STFT(
+        framesize=param_fft_size,
+        hopsize=param_hop_size,
+        window='vorbis')
+
+    erb = ERB(
+        samplerate=param_sr,
+        fftsize=param_fft_size,
+        erbsize=param_erb_bins,
+        minwidth=param_erb_min_width,
+        alpha=param_norm_alpha)
+
+    cpx = CPX(
+        cpxsize=param_deep_filter_bins,
+        alpha=param_norm_alpha)
+
+
+    audio_num = audio.__len__()//480
+    all_res = np.zeros((audio_num+1)*480)
+
+
+    # all audio stft
+    pad_0_audio = np.pad(audio,(480,0))
+    # xxxx = np.linspace(0,480*3,480*3)
+    all_stft = stft.stft(pad_0_audio)
+    # xxxxx = stft.istft(all_stft)
+    all_real_part = all_stft.real
+    all_imaginary_part = all_stft.imag
+    all_combined_array = np.stack((all_real_part, all_imaginary_part), axis=-1)
+    all_spec_float = torch.as_tensor(all_combined_array,dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    
+    x = torch.view_as_complex(all_spec_float).numpy()
+    y = erb(x)
+    all_erb_feat = torch.from_numpy(y.astype(np.float32))
+
+    x = torch.view_as_complex(all_spec_float).numpy()
+    y = cpx(x)
+    y = np.stack((y.real, y.imag), axis=-1)
+    all_spec_feat = torch.from_numpy(y.astype(np.float32))
+
+    all_output = model(all_spec_float, all_erb_feat, all_spec_feat) # orig: spec.clone()
+    all_enhanced = all_output[0].cpu()
+    # print('all_enhanced', all_enhanced.shape, all_enhanced.dtype)
+    all_enhanced = all_enhanced.squeeze(1)
+    # print('all_enhanced squeeze', all_enhanced.shape, all_enhanced.dtype)
+    all_enhanced = torch.view_as_complex(all_enhanced) # orig: as_complex
+
+    write_idx = 0
+
+    for idx in tqdm(range(audio_num-1)):
+        all_irfft_960 = np.fft.irfft(all_enhanced[0,idx,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        all_res[write_idx:write_idx+960] += all_irfft_960
+        write_idx += 480
+
+    return all_res
+
+
+def filter_originDF_4frame(model, audio):
+    cpu = torch.device('cpu')
+
+    param_sr = 48000
+    param_fft_size = 960
+    param_hop_size = 480
+    param_fft_bins = 481
+    param_erb_bins = 32
+    param_erb_min_width = 2
+    param_deep_filter_bins = 96
+    param_norm_alpha = 0.99
+
+    assert getattr(model, 'freq_bins', param_fft_bins) == param_fft_bins
+    assert getattr(model, 'erb_bins', param_erb_bins) == param_erb_bins
+    assert getattr(model, 'nb_df', getattr(model, 'df_bins', param_deep_filter_bins)) == param_deep_filter_bins
+    # assert state.sr() == param_sr
+    # assert len(state.erb_widths()) == param_erb_bins
+
+    stft = STFT(
+        framesize=param_fft_size,
+        hopsize=param_hop_size,
+        window='vorbis')
+
+    erb = ERB(
+        samplerate=param_sr,
+        fftsize=param_fft_size,
+        erbsize=param_erb_bins,
+        minwidth=param_erb_min_width,
+        alpha=param_norm_alpha)
+
+    cpx = CPX(
+        cpxsize=param_deep_filter_bins,
+        alpha=param_norm_alpha)
+
+    all_erb = ERB(
+        samplerate=param_sr,
+        fftsize=param_fft_size,
+        erbsize=param_erb_bins,
+        minwidth=param_erb_min_width,
+        alpha=param_norm_alpha)
+
+    all_cpx = CPX(
+        cpxsize=param_deep_filter_bins,
+        alpha=param_norm_alpha)
+
+
+    #---------------------- init --------------------------
+    audio_num = audio.__len__()//480
+    
+    all_res = np.zeros((audio_num+1)*480)
+    
+    input_buffer_cache = np.zeros(480*5)
+    cache_480 = np.zeros(480)
+    rt_4frame_res = np.zeros((audio_num+1)*480)
+
+    #--------------------- offline module start ------------------------
+    # all audio stft
+    pad_0_audio = np.pad(audio,(480*4,0))
+    all_stft = stft.stft(pad_0_audio)
+    all_real_part = all_stft.real
+    all_imaginary_part = all_stft.imag
+    all_combined_array = np.stack((all_real_part, all_imaginary_part), axis=-1)
+    all_spec_float = torch.as_tensor(all_combined_array,dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    
+    x = torch.view_as_complex(all_spec_float).numpy()
+    y = all_erb(x)
+    all_erb_feat = torch.from_numpy(y.astype(np.float32))
+
+    x = torch.view_as_complex(all_spec_float).numpy()
+    y = all_cpx(x)
+    y = np.stack((y.real, y.imag), axis=-1)
+    all_spec_feat = torch.from_numpy(y.astype(np.float32))
+
+    all_output = model(all_spec_float, all_erb_feat, all_spec_feat) # orig: spec.clone()
+    all_enhanced = all_output[0].cpu()
+    all_enhanced = all_enhanced.squeeze(1)
+    all_enhanced = torch.view_as_complex(all_enhanced) # orig: as_complex
+    #--------------------- offline module end ------------------------
+
+
+
+    write_idx = 0
+
+    for idx in tqdm(range(audio_num-1)):
+        #--------------------- online part start -----------------
+        # push new data into buffer
+        input_buffer_cache[:-480] = input_buffer_cache[480:].copy()
+        input_buffer_cache[-480:] = audio[ idx*480:(idx+1)*480 ].copy()
+
+        # spec_floar
+        tmp_spec = stft.stft(input_buffer_cache)
+        real_part = tmp_spec.real
+        imaginary_part = tmp_spec.imag
+        combined_array = np.stack((real_part, imaginary_part), axis=-1)
+        spec_float = torch.as_tensor(combined_array,dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+
+        # erb_feat
+        x = torch.view_as_complex(spec_float).numpy()
+        y = erb(x)
+        erb_feat = torch.from_numpy(y.astype(np.float32))
+
+        # spec_feat
+        x = torch.view_as_complex(spec_float).numpy()
+        y = cpx(x)
+        y = np.stack((y.real, y.imag), axis=-1)
+        spec_feat = torch.from_numpy(y.astype(np.float32))
+        
+        # model process
+        try:
+            # tmp_output = model(spec_float, erb_feat, spec_feat)
+            print("diff in stft A: ", (all_spec_float[0,0,idx,:,:] - spec_float[0,0,0,:,:])[0:10,:])
+            print("diff in stft B: ", (all_spec_float[0,0,idx+1,:,:] - spec_float[0,0,1,:,:])[0:10,:])
+            print("diff in erb A: ", (all_erb_feat[0,0,idx,:] - erb_feat[0,0,0,:])[0:10])
+            print("diff in erb B: ", (all_erb_feat[0,0,idx+1,:] - erb_feat[0,0,1,:])[0:10])
+            print("diff in specfeat A: ", (all_spec_feat[0,0,idx,:,:] - spec_feat[0,0,0,:,:])[0:10,:])
+            print("diff in specfeat B: ", (all_spec_feat[0,0,idx+1,:,:] - spec_feat[0,0,1,:,:])[0:10,:])
+            tmp_output = model(spec_float, erb_feat, spec_feat)
+            # # tmp_output = model(all_spec_float[:,:,idx*2:idx*2+2,:,:], all_erb_feat[:,:,idx*2:idx*2+2,:], all_spec_feat[:,:,idx*2:idx*2+2,:,:])
+            print("output A spec_float diff: ",all_output[0][0,0,idx,0:15,:] - tmp_output[0][0,0,0,0:15,:])
+            print("output B spec_float diff: ",all_output[0][0,0,idx+1,0:15,:] - tmp_output[0][0,0,1,0:15,:])
+
+
+        except RuntimeError as e:
+            print("Error during model inference:", e)
+            print("Checking tensor sizes...")
+            raise
+
+
+
+
+        enhanced_part = tmp_output[0].cpu()
+        enhanced_part = enhanced_part.squeeze(1)
+        enhanced_part = torch.view_as_complex(enhanced_part) # orig: as_complex`
+        tmp_irfft_960 = np.fft.irfft(enhanced_part[0,0,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        rt_4frame_res[write_idx:write_idx+960] += tmp_irfft_960
+
+        #--------------------- online part end -----------------
+
+        
+        #--------------------- offline part start -----------------
+        all_irfft_960 = np.fft.irfft(all_enhanced[0,idx,:].detach().numpy(), axis=-1, norm='forward') * stft.get_window()
+        all_res[write_idx:write_idx+960] += all_irfft_960
+        #--------------------- offline part end -------------------
+        
+        write_idx += 480
+
+    return rt_4frame_res, all_res
+
+
+
+
+def ut6():
+    import matplotlib.pyplot as plt
+
+    model, state = init_df()
+    model.eval()
+
+    all_model,all_state = init_df()
+    all_model.eval()
+
+    audio, sr = read('/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk.wav', state.sr())
+    audio = np.squeeze(audio,0)
+    # audio = np.linspace(1,48000,48000,dtype=np.float64)
+    
+    # all_res = filter_originDF_offline(model,audio)
+    rt_4frame_res,all_res = filter_originDF_4frame(model,audio)
+
+
+    # res, all_res = filter_RT_4frame(model, all_model, audio)
+    write('/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk_4frame_res.wav', sr, rt_4frame_res)
+    write('/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk_all_res.wav', sr, all_res)
+
 
 
 if __name__ == "__main__":
@@ -1320,4 +1581,5 @@ if __name__ == "__main__":
     # test_df_erb_and_erb_function()
     # ut3()
     # ut4()
-    ut5()
+    # ut5() #error
+    ut6()
