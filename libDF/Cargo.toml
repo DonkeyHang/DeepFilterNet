@@ -1,18 +1,17 @@
 [package]
 name = "deep_filter"
-version = "0.5.7-pre"
+version = "0.5.3"
 authors = ["Hendrik Schröter"]
 edition = "2021"
 description = "Noise supression using deep filtering"
 repository = "https://github.com/Rikorose/DeepFilterNet"
 license = "MIT/Apache-2.0"
 readme = "../README.md"
-rust-version = "1.70"
+rust-version = "1.60"
 
 [lib]
 name = "df"
 path = "src/lib.rs"
-crate-type = ["cdylib", "rlib", "staticlib"]
 
 [[bin]]
 name = "sample-hdf5"
@@ -50,7 +49,7 @@ dataset = [
   "dep:anyhow",
 ]
 timings = []
-logging = ["dep:log", "dep:crossbeam-channel"]
+logging = ["dep:log"]
 vorbis = ["dep:lewton", "dep:ogg"]
 flac = ["dep:claxon"]
 bin = [
@@ -78,25 +77,16 @@ tract = [
   "dep:flate2",
   "dep:tar",
 ]
-default-model = [] # Include default DFN3 model
-default-model-ll = [] # Include default DFN3 low latency model
+default-model = []  # Include default DFN3 model
+default-model-ll = []  # Include default DFN3 low latency model
 nightly-features = []
-capi = ["tract", "default-model", "dep:ndarray", "logging"]
-wasm = [
-  "tract",
-  "default-model",
-  "dep:ndarray",
-  "dep:wasm-bindgen",
-  "dep:getrandom",
-  "dep:console_error_panic_hook",
-  "dep:js-sys",
-]
+capi = ["tract", "default-model", "dep:ndarray"]
 hdf5-static = ["hdf5?/static"]
 
 [dependencies]
 rustfft = "^6.1.0"
 realfft = "^3.1.0"
-itertools = "0.12"
+itertools = "0.10"
 num-complex = { version = "^0.4", features = ["serde"] }
 log = { version = "0.4", features = ["std"], optional = true }
 rand = { version = "0.8", optional = true }
@@ -117,28 +107,23 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 lewton = { version = "^0.10", optional = true }
 ogg = { version = "^0.8", optional = true }
 claxon = { version = "^0.4", optional = true }
-env_logger = { version = "0.11", optional = true }
+env_logger = { version = "0.10", optional = true }
 clap = { version = "4.0", optional = true, features = ["derive"] }
-rust-ini = { version = "^0.21", optional = true }
-tract-core = { version = "^0.21.4", optional = true }
-tract-onnx = { version = "^0.21.4", optional = true }
-tract-pulse = { version = "^0.21.4", optional = true }
-tract-hir = { version = "^0.21.4", optional = true }
+rust-ini = { version = "^0.19", optional = true }
+tract-core = { version = "^0.19.4", optional = true }
+tract-onnx = { version = "^0.19.4", optional = true }
+tract-pulse = { version = "^0.19.4", optional = true }
+tract-hir = { version = "^0.19.4", optional = true }
 flate2 = { version = "1.0.24", optional = true }
 tar = { version = "0.4.38", optional = true }
-wasm-bindgen = { version = "0.2.87", optional = true }
-getrandom = { version = "0.2", features = ["js"], optional = true }
-console_error_panic_hook = { version = "0.1.1", optional = true }
-js-sys = { version = "0.3", optional = true }
-
 
 [target.'cfg(all(not(windows), not(target_os = "android"), not(target_os = "macos"), not(target_os = "freebsd"), not(target_env = "musl"), not(target_arch = "riscv64")))'.dependencies]
 jemallocator = { version = "0.5.0", optional = true }
 
 [dev-dependencies]
 rand = "0.8"
-rstest = "0.19"
-env_logger = "0.11"
+rstest = "0.17"
+env_logger = "0.10"
 log = { version = "0.4", features = ["std"] }
 
 [package.metadata.capi.header]

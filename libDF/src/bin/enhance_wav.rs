@@ -24,12 +24,9 @@ struct Args {
     /// Path to model tar.gz
     #[arg(short, long, value_hint = ValueHint::FilePath)]
     model: Option<PathBuf>,
-    /// Enable post-filter
+    /// Enable postfilter
     #[arg(long = "pf")]
     post_filter: bool,
-    /// Post-filter beta. Higher beta results in stronger attenuation.
-    #[arg(long = "pf-beta", default_value_t = 0.02)]
-    post_filter_beta: f32,
     /// Compensate delay of STFT and model lookahead
     #[arg(short = 'D', long)]
     compensate_delay: bool,
@@ -39,23 +36,13 @@ struct Args {
     #[arg(short, long, default_value_t = 100.)]
     atten_lim_db: f32,
     /// Min dB local SNR threshold for running the decoder DNN side
-    #[arg(long, value_parser, allow_negative_numbers = true, default_value_t = -15.)]
+    #[arg(long, value_parser, default_value_t=-15.)]
     min_db_thresh: f32,
     /// Max dB local SNR threshold for running ERB decoder
-    #[arg(
-        long,
-        value_parser,
-        allow_negative_numbers = true,
-        default_value_t = 35.
-    )]
+    #[arg(long, value_parser, default_value_t = 35.)]
     max_db_erb_thresh: f32,
     /// Max dB local SNR threshold for running DF decoder
-    #[arg(
-        long,
-        value_parser,
-        allow_negative_numbers = true,
-        default_value_t = 35.
-    )]
+    #[arg(long, value_parser, default_value_t = 35.)]
     max_db_df_thresh: f32,
     /// If used with multiple channels, reduce the mask with max (1) or mean (2)
     #[arg(long, value_parser, default_value_t = 1)]
@@ -101,20 +88,15 @@ fn main() -> Result<()> {
         .init();
 
     // Initialize with 1 channel
-    let mut r_params = RuntimeParams::default();
-    r_params = r_params.with_atten_lim(args.atten_lim_db).with_thresholds(
+    let mut r_params = RuntimeParams::new(
+        1,
+        args.post_filter,
+        args.atten_lim_db,
         args.min_db_thresh,
         args.max_db_erb_thresh,
         args.max_db_df_thresh,
+        args.reduce_mask.try_into().unwrap(),
     );
-    if args.post_filter {
-        r_params = r_params.with_post_filter(args.post_filter_beta);
-    }
-    if let Ok(red) = args.reduce_mask.try_into() {
-        r_params = r_params.with_mask_reduce(red);
-    } else {
-        log::warn!("Input not valid for `reduce_mask`.")
-    }
     let df_params = if let Some(tar) = args.model.as_ref() {
         match DfParams::new(tar.clone()) {
             Ok(p) => p,
@@ -123,7 +105,7 @@ fn main() -> Result<()> {
                 exit(1)
             }
         }
-    } else if cfg!(any(feature = "default-model", feature = "default-model-ll")) {
+    } else if cfg!(any(feature = "default-model", feature="default-model-ll")) {
         DfParams::default()
     } else {
         log::error!("deep-filter was not compiled with a default model. Please provide a model via '--model <path-to-model.tar.gz>'");

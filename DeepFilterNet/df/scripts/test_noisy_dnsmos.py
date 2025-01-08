@@ -24,6 +24,7 @@ def main(args):
     noisy_files = glob.glob(noisy_dir + "/*.wav")
     n = len(noisy_files)
     logger.info(f"Evaluating DNSMOS on enhanced noisy files for dir: {noisy_dir} ({n} files)")
+    assert n == 859
     if args.output_dir is not None:
         os.makedirs(args.output_dir, exist_ok=True)
 
@@ -37,33 +38,19 @@ def main(args):
             dtype=torch.float32,
         )
 
-    dnsmos_versions = []
-    if args.v1:
-        dnsmos_versions += ["v1"]
-    if args.v5 or len(dnsmos_versions) == 0:
-        dnsmos_versions += ["v5"]
     metrics = evaluation_loop_dns(
         df_state,
         model,
         noisy_files,
         n_workers=args.metric_workers,
         save_audio_callback=save_audio_callback if args.output_dir is not None else None,
-        metrics=["v5"],
+        metrics=["p835_local"],
         csv_path_enh=args.csv_path_enh,
         csv_path_noisy=args.csv_path_noisy,
         eval_noisy=False,
     )
     for k, v in metrics.items():
         logger.info(f"{k}: {v}")
-    print(
-        metrics["Enhanced SIG"],
-        ",",
-        metrics["Enhanced BAK"],
-        ",",
-        metrics["Enhanced OVRL"],
-        ",",
-        metrics["Enhanced P808_MOS"],
-    )
 
 
 if __name__ == "__main__":
@@ -73,8 +60,6 @@ if __name__ == "__main__":
         type=str,
         help="Test set directory containing noisy audio files.",
     )
-    parser.add_argument("--v1", action="store_true")
-    parser.add_argument("--v5", action="store_true")
     parser.add_argument(
         "--metric-workers",
         "-w",

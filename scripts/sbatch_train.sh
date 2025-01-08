@@ -29,13 +29,13 @@ export HDF5_USE_FILE_LOCKING='FALSE'
 export RUST_BACKTRACE=1
 
 PROJECT_NAME=DeepFilterNet
-BRANCH=${BRANCH:-main}
 DATA_DIR=${DATA_DIR:-$CLUSTER/Data/HDF5}     # Set to the directory containing the HDF5s
 DATA_CFG=${DATA_CFG:-$DATA_DIR/datasets.cfg} # Default dataset configuration
 DATA_CFG=$(readlink -f "$DATA_CFG")
 PYTORCH_JIT=${PYTORCH_JIT:-1}                # Set to 0 to disable pytorch JIT compilation
 COPY_DATA=${COPY_DATA:-1}                    # Copy data
 COPY_MAX_GB=${COPY_MAX_GB:-150}              # Max amount to copy hdf5 datasets, rest will be linked
+DF_CACHE_MAX_GB=${DF_CACHE_MAX_GB:-100}      # Max GB for validation dataset caching
 DEBUG=${DEBUG:-0}                            # Debug mode passed to the python train script
 EXCLUDE=${EXCLUDE:-lme[49,170,171]}          # Slurm nodes to exclude
 
@@ -43,18 +43,6 @@ if [ "$DEBUG" -eq 1 ]; then
   DEBUG="--debug"
 elif [ "$DEBUG" -eq 0 ]; then
   DEBUG="--no-debug"
-fi
-
-if [ "$DF_DISABLE_AUG" -eq 1 ]; then
-  export DF_P_REMVOE_DC=0.0
-  export DF_P_LFILT=0.0
-  export DF_P_BIQUAD=0.0
-  export DF_P_RESAMPLE=0.0
-  export DF_P_CLIPPING=0.0
-  export DF_P_CLIPPING_NOISE=0.0
-  export DF_P_ZEROING=0.0
-  export DF_P_AIR_AUG=0.0
-  export DF_P_NOISE_GEN=0.0
 fi
 
 echo "Started sbatch script at $(date) in $(pwd)"
@@ -140,9 +128,11 @@ if [[ -d /scratch ]] && [[ $COPY_DATA -eq 1 ]]; then
 fi
 
 # Double check there is enough space for validation dataset caching
-DS_SIZE=$(($(stat -f --format="%a*%S/1000/1000/1000" "$DATA_DIR")))
-echo "Dataset directory size: $DS_SIZE"
-du -hs "$DATA_DIR"
+FREE_GB=$(($(stat -f --format="%a*%S/1024/1024/1024" "$DATA_DIR")))
+echo $DF_CACHE_MAX_GB
+echo $FREE_GB
+export DF_CACHE_MAX_GB=$(( FREE_GB < DF_CACHE_MAX_GB ? FREE_GB : DF_CACHE_MAX_GB ))
+echo $DF_CACHE_MAX_GB
 
 # Signal handlers.
 # This is used to indicate that maximum training time will be exceeded.

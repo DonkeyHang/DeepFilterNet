@@ -2,7 +2,6 @@ use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::env;
 use std::ffi::OsStr;
 use std::fmt;
-use std::fmt::Display;
 #[cfg(feature = "timings")]
 use std::fmt::Write as _;
 use std::fs;
@@ -10,7 +9,6 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufReader, BufWriter};
 #[cfg(feature = "vorbis")]
 use std::io::{Cursor, Read, Seek};
-use std::marker::Copy;
 use std::ops::Range;
 use std::path::Path;
 use std::str::FromStr;
@@ -653,7 +651,7 @@ impl DatasetBuilder {
                     .with_sr(self.sr),
             ),
             Box::new(
-                RandResample::default_with_prob(get_env("DF_P_RESAMPLE").unwrap_or(0.1))
+                RandResample::default_with_prob(get_env("DF_P_LFILT").unwrap_or(0.1))
                     .with_sr(self.sr),
             ),
         ]);
@@ -698,14 +696,13 @@ impl DatasetBuilder {
                     .with_sr(self.sr),
             ),
             Box::new(
-                RandResample::default_with_prob(get_env("DF_P_RESAMPLE").unwrap_or(0.1))
+                RandResample::default_with_prob(get_env("DF_P_LFILT").unwrap_or(0.1))
                     .with_sr(self.sr),
             ),
         ]);
         if ds_split == Split::Train {
-            let p_clipping: f32 = get_env("DF_P_CLIPPING_NOISE").unwrap_or(0.1);
             ns_augmentations.push(Box::new(
-                RandClipping::default_with_prob(p_clipping).with_c(0.01..0.5),
+                RandClipping::default_with_prob(0.1).with_c(0.01..0.5),
             ))
         }
         let p_reverb = self.p_reverb.unwrap_or(0.);
@@ -714,20 +711,12 @@ impl DatasetBuilder {
         }
         let reverb = RandReverbSim::new(p_reverb, self.sr)
             .with_drr(get_env("DF_REVERB_DRR").unwrap_or(0.3))
-            .with_rt60(get_env("DF_REVERB_RT60").unwrap_or(0.5))
-            .with_offset_late_reflections(get_env("DF_REVERB_OFFSET_LATE").unwrap_or(20));
+            .with_rt60(get_env("DF_REVERB_RT60").unwrap_or(0.5));
         let seed = self.seed.unwrap_or(0);
         // 5% of noises used for mixing will contain randomly generated noise.
         // This has the advantage that the noise will actually contain frequencies up 24 kHz.
-        let p_noise_gen = get_env("DF_P_NOISE_GEN").unwrap_or(0.05);
-        let noise_generator = NoiseGenerator::new(
-            self.sr,
-            if ds_split == Split::Train {
-                p_noise_gen
-            } else {
-                0.0
-            },
-        );
+        let noise_generator =
+            NoiseGenerator::new(self.sr, if ds_split == Split::Train { 0.05 } else { 0.0 });
         let bw_limiter = if let Some(p) = self.p_bandwidth_ext {
             if p > 0. {
                 Some(BandwidthLimiterAugmentation::new(p, self.sr))
@@ -868,10 +857,9 @@ impl Dataset<Complex32> for FftDataset {
 
         // To frequency domain
         let nb_erb = self.nb_erb.unwrap_or(1);
-        let min_nb_erb = self.min_nb_freqs.unwrap_or(1);
         let sr = self.sr();
         let fft_size = self.fft_size;
-        let mut state = DFState::new(sr, fft_size, self.hop_size, nb_erb, min_nb_erb);
+        let mut state = DFState::new(sr, fft_size, self.hop_size, nb_erb, 1);
 
         let speech = stft(sample.get_speech_view()?, &mut state, false);
         let mut noisy = stft(sample.get_noisy_view()?, &mut state, true);
@@ -1212,18 +1200,12 @@ impl Dataset<f32> for TdDataset {
         #[cfg(feature = "timings")]
         let t0 = Instant::now();
         let sample_seed = seed.unwrap_or(idx as u64);
+        log::trace!("get_sample() idx {} with seed {:?}", idx, sample_seed,);
         seed_from_u64(self.seed + seed.unwrap_or(idx as u64));
         let mut rng = thread_rng()?;
         // Sample SNR and gain
         let &snr = self.snrs.choose(&mut rng).unwrap();
         let &gain = self.gains.choose(&mut rng).unwrap();
-        log::trace!(
-            "get_sample() idx {} with seed {:?}, snr {}, gain {}",
-            idx,
-            sample_seed,
-            snr,
-            gain
-        );
         let (mut speech, max_freq) = if snr <= -100 {
             (Array2::zeros((1, self.max_samples)), self.sr / 2)
         } else {
@@ -1761,11 +1743,11 @@ impl Hdf5Dataset {
         };
         let mut arr = self.match_ch(arr, 0, channel)?;
         match self.dtype {
-            Some(DType::I16) => arr /= i16::MAX as f32,
+            Some(DType::I16) => arr /= std::i16::MAX as f32,
             Some(DType::F32) => (),
             None => {
                 if ds.dtype()?.is::<i16>() {
-                    arr /= i16::MAX as f32
+                    arr /= std::i16::MAX as f32
                 }
             }
         }
@@ -1820,7 +1802,7 @@ impl Hdf5Dataset {
                 let mut out_ch = out.slice_mut(s![i, idx..idx + numel]);
                 debug_assert_eq!(out_ch.len(), next.channel(i as u32).len());
                 for (i_s, o_s) in next.channel(i as u32).iter().zip(out_ch.iter_mut()) {
-                    *o_s = *i_s as f32 / i16::MAX as f32
+                    *o_s = *i_s as f32 / std::i16::MAX as f32
                 }
             }
             idx += numel;
@@ -1944,7 +1926,7 @@ impl Hdf5Dataset {
         // Select channel
         let out = self.match_ch(out, 1, channel)?;
         // Transpose to channels first and convert to float
-        let out = out.t().mapv(|x| x as f32 / i16::MAX as f32);
+        let out = out.t().mapv(|x| x as f32 / std::i16::MAX as f32);
         Ok(out)
     }
 
@@ -2075,16 +2057,12 @@ fn mix_audio_signal(
 
 fn get_env<T, K>(var: K) -> Option<T>
 where
-    K: AsRef<OsStr> + Display + Copy,
-    T: FromStr + Display,
+    K: AsRef<OsStr>,
+    T: FromStr,
     <T as std::str::FromStr>::Err: std::fmt::Debug,
 {
     match env::var(var) {
-        Ok(e) => {
-            let e = e.parse::<T>().expect("Failed to parse env {var}: {e}");
-            log::debug!("Running with env '{}={}'", var, e);
-            Some(e)
-        }
+        Ok(e) => Some(e.parse::<T>().expect("Failed to parse env {var}: {e}")),
         Err(_) => None,
     }
 }
@@ -2149,7 +2127,7 @@ mod tests {
     {
         let mut e_clean = 0.;
         let mut e_noise = 0.;
-        for (xx, xv) in x.into_iter().zip(v) {
+        for (xx, xv) in x.into_iter().zip(v.into_iter()) {
             e_clean += (xx - xv).powi(2);
             e_noise += xv.powi(2);
         }
@@ -2169,7 +2147,7 @@ mod tests {
     {
         let mut e_clean = 0.;
         let mut e_noise = 0.;
-        for (xs, xx) in s.into_iter().zip(x) {
+        for (xs, xx) in s.into_iter().zip(x.into_iter()) {
             e_clean += xs.powi(2);
             e_noise += (xx - xs).powi(2);
         }

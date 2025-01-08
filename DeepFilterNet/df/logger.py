@@ -1,6 +1,3 @@
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import os
 import sys
 import warnings
@@ -174,15 +171,12 @@ class DuplicateFilter:
 _duplicate_filter = DuplicateFilter()
 
 
-def log_model_summary(model: torch.nn.Module, verbose=False, force=False):
+def log_model_summary(model: torch.nn.Module, verbose=False):
     try:
         import ptflops
-    except ImportError as e:
-        if not force:
-            logger.debug("Failed to import ptflops. Cannot print model summary.")
-            return
-        else:
-            raise e
+    except ImportError:
+        logger.debug("Failed to import ptflops. Cannot print model summary.")
+        return
 
     from df.model import ModelParams
 

@@ -5,18 +5,15 @@ import argparse
 import concurrent.futures
 import glob
 import os
-from time import sleep
 from typing import List, Optional, Union
 
 import librosa
 import numpy as np
 import pandas as pd
 import soundfile as sf
-import torch
 from loguru import logger
 from tqdm import tqdm
 
-from df.io import load_audio, resample, save_audio
 from df.logger import init_logger, log_metrics
 from df.scripts.dnsmos import get_ort_session
 from df.utils import download_file, get_cache_dir
@@ -25,44 +22,12 @@ SAMPLING_RATE = 16000
 INPUT_LENGTH = 9.01
 URL_ONNX = "https://github.com/microsoft/DNS-Challenge/raw/e14b010/DNSMOS/DNSMOS"
 NAMES = ["SIG", "BAK", "OVRL", "P808_MOS"]
-SLEEP_MS = int(os.environ.get("SLEEP", "0"))
-if torch.cuda.is_available():
-    TORCH_DEVICE = "cuda"
-else:
-    TORCH_DEVICE = "cpu"
 
 
 class ComputeScore:
     def __init__(self, primary_model_path, p808_model_path, cpu: bool = False) -> None:
         self.onnx_sess = get_ort_session(primary_model_path, providers="cpu" if cpu else "gpu")
         self.p808_onnx_sess = get_ort_session(p808_model_path, providers="cpu" if cpu else "gpu")
-        n_fft = 320
-        self.w = torch.hann_window(n_fft + 1).to(TORCH_DEVICE)
-        self.mel = torch.as_tensor(librosa.filters.mel(n_mels=120, sr=16000, n_fft=n_fft)).to(
-            TORCH_DEVICE
-        )
-
-        # melspec: np.ndarray = np.einsum("...ft,mf->...mt", S, mel_basis, optimize=True)
-
-    def audio_melspec_torch(
-        self, audio, n_mels=120, frame_size=320, hop_length=160, sr=16000, to_db=True
-    ):
-        audio = torch.as_tensor(audio).to(TORCH_DEVICE).to(torch.float32)
-        powspec = (
-            torch.stft(
-                audio,
-                n_fft=frame_size + 1,
-                hop_length=hop_length,
-                window=self.w,
-                return_complex=True,
-            )
-            .abs()
-            .square()
-        )
-        mel_spec = torch.einsum("...ft,mf->mt", powspec, self.mel).t().cpu().numpy()
-        if to_db:
-            mel_spec = (librosa.power_to_db(mel_spec, ref=np.max) + 40) / 40
-        return mel_spec
 
     def audio_melspec(
         self, audio, n_mels=120, frame_size=320, hop_length=160, sr=16000, to_db=True
@@ -90,27 +55,14 @@ class ComputeScore:
 
         return sig_poly, bak_poly, ovr_poly
 
-    def __call__(
-        self,
-        fpath_or_tensor: Union[str, torch.Tensor],
-        sampling_rate: int,
-        is_personalized_MOS: bool = False,
-        fname: Optional[str] = None,
-    ):
+    def __call__(self, fpath: str, sampling_rate: int, is_personalized_MOS: bool):
+        logger.debug(f"Processing file: {fpath}")
+        aud, input_fs = sf.read(fpath)
         fs = sampling_rate
-        if isinstance(fpath_or_tensor, str):
-            fpath = fpath_or_tensor
-            logger.debug(f"Processing file: {fpath}")
-            aud, input_fs = sf.read(fpath)
-            if input_fs != fs:
-                audio = librosa.resample(aud, orig_sr=input_fs, target_sr=fs)
-            else:
-                audio = aud
-            feat_impl = self.audio_melspec
+        if input_fs != fs:
+            audio = librosa.resample(aud, orig_sr=input_fs, target_sr=fs)
         else:
-            audio = fpath_or_tensor
-            feat_impl = self.audio_melspec_torch
-            fpath = fname or "unknown"
+            audio = aud
         actual_audio_len = len(audio)
         len_samples = int(INPUT_LENGTH * fs)
         while len(audio) < len_samples:
@@ -134,9 +86,9 @@ class ComputeScore:
                 continue
 
             input_features = np.array(audio_seg).astype("float32")[np.newaxis, :]
-            p808_input_features = np.array(feat_impl(audio=audio_seg[:-160])).astype("float32")[
-                np.newaxis, :, :
-            ]
+            p808_input_features = np.array(self.audio_melspec(audio=audio_seg[:-160])).astype(
+                "float32"
+            )[np.newaxis, :, :]
             oi = {"input_1": input_features}
             p808_oi = {"input_1": p808_input_features}
             p808_mos = self.p808_onnx_sess.run(None, p808_oi)[0][0][0]
@@ -152,7 +104,7 @@ class ComputeScore:
             predicted_mos_ovr_seg.append(mos_ovr)
             predicted_p808_mos.append(p808_mos)
 
-        clip_dict = {"filename": fname or fpath, "len_in_sec": actual_audio_len / fs, "sr": fs}
+        clip_dict = {"filename": fpath, "len_in_sec": actual_audio_len / fs, "sr": fs}
         clip_dict["num_hops"] = num_hops
         clip_dict["OVRL_raw"] = np.mean(predicted_mos_ovr_seg_raw)
         clip_dict["SIG_raw"] = np.mean(predicted_mos_sig_seg_raw)
@@ -168,7 +120,7 @@ def download_onnx_models():
     cache_dir = os.path.join(get_cache_dir(), "DNS5")
     if not os.path.isdir(cache_dir):
         os.makedirs(cache_dir)
-    sig_bak_ovr = os.path.join(cache_dir, "sig_bak_ovr.onnx")
+    sig_bak_ovr = os.path.join(cache_dir, "bak_ovr.onnx")
     if not os.path.exists(sig_bak_ovr):
         sig_bak_ovr = download_file(URL_ONNX + "/sig_bak_ovr.onnx", download_dir=cache_dir)
     p808 = os.path.join(cache_dir, "model_v8.onnx")
@@ -177,26 +129,13 @@ def download_onnx_models():
     return sig_bak_ovr, p808
 
 
-def eval_sample_dnsmos(
-    file: str,
-    target_mos: Optional[List[float]] = None,
-    log: bool = True,
-    use_torch: bool = False,
-    compute_score: Optional[ComputeScore] = None,
-):
+def eval_dnsmos_single(file: str, target_mos: Optional[List[float]] = None):
     primary_model_path, p808_model_path = download_onnx_models()
     compute_score = ComputeScore(primary_model_path, p808_model_path)
-    if compute_score is None:
-        primary_model_path, p808_model_path = download_onnx_models()
-        compute_score = ComputeScore(primary_model_path, p808_model_path)
     desired_fs = SAMPLING_RATE
-    if use_torch:
-        audio = load_audio(file, desired_fs)[0].squeeze(0).numpy()
-        scores = compute_score(audio, desired_fs, False, fname=file)
     scores = compute_score(file, desired_fs, False)
     scores = {n: scores[n] for n in NAMES}
-    if log:
-        logger.info(f"Processing file: {file}")
+    logger.info(f"Processing file: {file}")
     if target_mos is not None:
         assert len(target_mos) == 4
         for n, t in zip(NAMES, target_mos):
@@ -208,12 +147,15 @@ def eval_sample_dnsmos(
                 print(scores.values())
                 exit(2)
 
-    if log:
-        log_metrics("Predicted", {n: v for (n, v) in scores.items()})
+    log_metrics("Predicted", {n: v for (n, v) in scores.items()})
     return scores
 
 
-def eval_dir_dnsmos(args):
+def eval_dnsmos(args):
+    models = glob.glob(os.path.join(args.testset_dir, "*"))
+    audio_clips_list = []
+    if args.personalized_MOS:
+        raise NotImplementedError()
     primary_model_path, p808_model_path = download_onnx_models()
 
     compute_score = ComputeScore(primary_model_path, p808_model_path)
@@ -221,12 +163,17 @@ def eval_dir_dnsmos(args):
     rows = []
     clips = []
     clips = glob.glob(os.path.join(args.testset_dir, "*.wav"))
-    is_personalized_eval = False
+    is_personalized_eval = args.personalized_MOS
     desired_fs = SAMPLING_RATE
-
-    if len(clips) == 0:
-        print(f"No samples found in dir {args.testset_dir}")
-        exit(1)
+    for m in tqdm(models):
+        max_recursion_depth = 10
+        audio_path = os.path.join(args.testset_dir, m)
+        audio_clips_list = glob.glob(os.path.join(audio_path, "*.wav"))
+        while len(audio_clips_list) == 0 and max_recursion_depth > 0:
+            audio_path = os.path.join(audio_path, "**")
+            audio_clips_list = glob.glob(os.path.join(audio_path, "*.wav"))
+            max_recursion_depth -= 1
+        clips.extend(audio_clips_list)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_workers) as executor:
         future_to_url = {
@@ -250,79 +197,10 @@ def eval_dir_dnsmos(args):
     print_csv(df)
 
 
-def load_encoded(buffer: np.ndarray, codec: str):
-    import io
-
-    import torchaudio as ta
-
-    # In some rare cases, torch audio failes to fully decode vorbis resulting in a way shorter signal
-    wav, _ = ta.load(io.BytesIO(buffer[...].tobytes()), format=codec.lower())
-    return wav
-
-
-def eval_ds(args):
-    from tempfile import NamedTemporaryFile
-
-    import h5py
-    import torch
-
-    primary_model_path, p808_model_path = download_onnx_models()
-    compute_score = ComputeScore(primary_model_path, p808_model_path)
-
-    rows = []
-    is_personalized_eval = False
-    desired_fs = SAMPLING_RATE
-
-    def compute_score_audio(audio: torch.Tensor, sr: int, fname: str):
-        if args.use_torch:
-            audio = audio.squeeze(0)
-            if audio.dtype == torch.int16:
-                audio = audio.to(torch.float32) / 32767.0
-            if sr != desired_fs:
-                audio = resample(audio, sr, desired_fs)
-            return compute_score(audio, desired_fs, is_personalized_eval, fname=fname)
-        with NamedTemporaryFile(suffix=".wav") as nf:
-            save_audio(nf.name, audio, sr, dtype=torch.float32)
-            return compute_score(nf.name, desired_fs, is_personalized_eval, fname=fname)
-
-    for path in args.ds:
-        assert os.path.isfile(path)
-        group = "speech"
-        with h5py.File(path, "r", libver="latest") as f:
-            print(f"Evaluating ds {path}")
-            assert group in f
-            sr = int(f.attrs["sr"])
-            codec = f.attrs.get("codec", "pcm")
-            for n, sample in f[group].items():  # type: ignore
-                print(n)
-                if codec == "pcm":
-                    audio = torch.from_numpy(sample[...])
-                    if audio.dim() == 1:
-                        audio.unsqueeze_(0)
-                else:
-                    audio = load_encoded(sample, codec)
-                if SLEEP_MS > 0:
-                    sleep(SLEEP_MS / 1000)
-                rows.append(compute_score_audio(audio, sr, fname=n))
-
-    df = pd.DataFrame(rows)
-    if args.csv_file:
-        csv_file = args.csv_file
-        df.to_csv(csv_file)
-    print_csv(df)
-
-
-def print_csv(df: Union[pd.DataFrame, List[str]]):
-    if isinstance(df, list):
-        df = [pd.read_csv(f) for f in df]
-        df = pd.concat(df)
+def print_csv(df: Union[pd.DataFrame, str]):
+    if isinstance(df, str):
+        df = pd.read_csv(df)
     print(df.describe())
-    print(
-        np.mean(df["SIG"]),
-        np.mean(df["BAK"]),
-        np.mean(df["OVRL"]),
-        np.mean(df["P808_MOS"]),
-    )
 
 
 def isclose(a, b) -> bool:
@@ -336,25 +214,25 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="subparser_name")
     mn_parser = subparsers.add_parser("mean", aliases=["m"])
-    mn_parser.add_argument("csv_file", type=str, nargs="+")
-    eval_sample_parser = subparsers.add_parser("eval-sample")
-    eval_sample_parser.add_argument("file", type=str)
-    eval_sample_parser.add_argument("--target_mos", "-t", type=float, nargs="*")
-    eval_dir_parser = subparsers.add_parser("eval-dir", aliases=["e"])
-    eval_dir_parser.add_argument(
+    mn_parser.add_argument("csv_file", type=str)
+    eval_single_parser = subparsers.add_parser("eval-single")
+    eval_single_parser.add_argument("file", type=str)
+    eval_single_parser.add_argument("--target_mos", "-t", type=float, nargs="*")
+    eval_parser = subparsers.add_parser("eval", aliases=["e"])
+    eval_parser.add_argument(
         "testset_dir", help="Path to the dir containing audio clips in .wav to be evaluated"
     )
-    eval_dir_parser.add_argument(
+    eval_parser.add_argument(
         "-o", "--csv-file", help="If you want the scores in a CSV file provide the full path"
     )
-    eval_dir_parser.add_argument("--cpu", help="Only run on CPU", action="store_true")
-    eval_dir_parser.add_argument("--num-workers", type=int, default=1)
-    eval_ds_parser = subparsers.add_parser("eval-ds")
-    eval_ds_parser.add_argument("ds", help="Path to the hdf5 dataset file", nargs="+")
-    eval_ds_parser.add_argument("--use-torch", action="store_true")
-    eval_ds_parser.add_argument(
-        "-o", "--csv-file", help="If you want the scores in a CSV file provide the full path"
+    eval_parser.add_argument("--cpu", help="Only run on CPU", action="store_true")
+    eval_parser.add_argument(
+        "-p",
+        "--personalized_MOS",
+        action="store_true",
+        help="Flag to indicate if personalized MOS score is needed or regular",
     )
+    eval_parser.add_argument("--num-workers", type=int, default=1)
 
     args = parser.parse_args()
     if args.subparser_name is None:
@@ -362,11 +240,7 @@ if __name__ == "__main__":
         exit(1)
     if args.subparser_name in ("m", "mean"):
         print_csv(args.csv_file)
-    elif args.subparser_name == "eval-sample":
-        eval_sample_dnsmos(args.file, args.target_mos)
-    elif args.subparser_name == "eval-dir":
-        eval_dir_dnsmos(args)
-    elif args.subparser_name == "eval-ds":
-        eval_ds(args)
+    elif args.subparser_name == "eval-single":
+        eval_dnsmos_single(args.file, args.target_mos)
     else:
-        raise NotImplementedError()
+        eval_dnsmos(args)

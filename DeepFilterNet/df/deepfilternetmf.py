@@ -1,6 +1,3 @@
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from functools import partial
 from typing import Final, List, Optional, Tuple
 
@@ -258,7 +255,9 @@ class DfDecoder(nn.Module):
 
         conv_layer = partial(Conv2dNormAct, separable=True, bias=False)
         kt = p.df_pathway_kernel_size_t
-        self.cov_convp = conv_layer(layer_width, p.df_order**2 * 2, fstride=1, kernel_size=(kt, 1))
+        self.cov_convp = conv_layer(
+            layer_width, p.df_order**2 * 2, fstride=1, kernel_size=(kt, 1)
+        )
         self.ifc_convp = conv_layer(layer_width, p.df_order * 2, fstride=1, kernel_size=(kt, 1))
 
         self.df_gru = SqueezedGRU_S(

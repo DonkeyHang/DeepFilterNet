@@ -18,12 +18,10 @@ def main(args):
     if args.type == "torch":
         print(model)
     elif args.type == "ptflops":
-        log_model_summary(model, verbose=True, force=True)
+        log_model_summary(model, verbose=True)
     elif args.type == "table":
         for line in model_summary_table(model):
             print(line)
-    else:
-        raise NotImplementedError()
 
 
 def model_summary_table(m: torch.nn.Module):
@@ -55,6 +53,6 @@ def model_summary_table(m: torch.nn.Module):
 
 
 if __name__ == "__main__":
-    parser = setup_df_argument_parser("INFO")
+    parser = setup_df_argument_parser("WARNING")
     parser.add_argument("--type", choices=["torch", "ptflops", "table"], default="torch")
     main(parser.parse_args())

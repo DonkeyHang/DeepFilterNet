@@ -1,7 +1,3 @@
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from df.enhance import enhance, init_df, load_audio, save_audio
 from df.utils import download_file
 

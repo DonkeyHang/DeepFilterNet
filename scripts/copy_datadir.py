@@ -14,9 +14,6 @@ from time import sleep
 from typing import DefaultDict, Dict, List, Optional, Tuple
 
 import h5py
-from icecream import ic
-
-ic.includeContext = True
 
 TIMESTAMP_FORMAT = "%Y%m%d%H%M"
 timestamp = datetime.now().strftime("%Y%m%d%H%M")
@@ -40,20 +37,16 @@ def ln(src, tgt):
         print(f"Failed to link src {src}: {e}")
 
 
-def du(path, block_size: str = "1"):
-    """disk usage"""
-    # path = Path(path)
-    # return sum(f.stat().st_size for f in path.glob("**/*") if f.is_file())
+def du(path):
+    """disk usage in human readable format (e.g. '2,1')"""
     try:
-        return int(
-            subprocess.check_output(
-                ["du", "-shL", f"--block-size={block_size}", path], stderr=subprocess.STDOUT
-            )
+        return float(
+            subprocess.check_output(["du", "-shD", "--block-size=1G", path])
             .split()[0]
             .decode("utf-8")
         )
-    except subprocess.CalledProcessError as exc:
-        return exc.output
+    except subprocess.CalledProcessError:
+        return 0.0
 
 
 def _cp(src, tgt, *rsync_args) -> bool:
@@ -85,10 +78,6 @@ def cp(src, tgt, try_other_hosts: bool = False, verbose=0):
         info = ["--info=name,stats"]
     elif verbose > 1:
         info = ["--info=name,stats2"]
-    if du(src, block_size="1") == du(tgt, block_size="1"):
-        if verbose:
-            print(f"File already exists: {tgt}")
-            return
     if try_other_hosts:
         hosts = [h for h in HOSTS if h != OWN]
         random.shuffle(hosts)
@@ -169,10 +158,8 @@ def copy_datasets(
     os.makedirs(target_dir, exist_ok=True)
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
     futures = {}
-    cur_b = du(target_dir)
-    max_b = int(max_gb * 1024 * 1024 * 1024)
-    ic(cur_b, max_b)
-    print(f"Current target dir size: {cur_b/1024**3} MB")
+    cur_gb = du(target_dir)
+    print(f"Current target dir size: {cur_gb}")
     print(f"Copying max {max_gb} GB")
     # Start with train since it will be accessed most of the time
     for split in ("train", "valid", "test"):
@@ -200,18 +187,11 @@ def copy_datasets(
                 copied.add(fn)
                 fn_src = os.path.join(src_dir, fn)
                 fn_tgt = os.path.join(target_dir, fn)
-                new_b = du(fn_src)
-                too_large = cur_b + new_b > max_b
-                if too_large or "test" in fn_src.lower():
+                new_gb = du(fn_src)
+                if cur_gb + new_gb > max_gb or "test" in fn_src.lower():
                     # If too large or a test dataset, link instead
-                    if too_large:
-                        new_mb = new_b / 1024**2
-                        free_mb = (max_b - cur_b) / 1024**2
-                        print(
-                            f"linking {fn_src} (too large, required: {new_mb:.1f} MB, free: {free_mb:.1f} MB)",
-                            flush=True,
-                        )
                     if not os.path.exists(fn_tgt):
+                        print("linking", fn_src, flush=True)
                         ln(fn_src, fn_tgt)
                     elif (
                         not have_read_locks
@@ -222,21 +202,15 @@ def copy_datasets(
                         print("checking", fn_tgt, flush=True)
                         futures[executor.submit(cp, fn_src, fn_tgt)] = fn_tgt
                 else:
-                    # ic(fn)
                     if os.path.islink(fn_tgt) and not have_read_locks:
                         os.remove(fn_tgt)  # Only remove if no other process has a readlock
                     elif have_read_locks and os.path.isfile(fn_tgt):
                         continue
                     print("copying", fn_src, flush=True)
-                    cur_b += new_b
+                    cur_gb += new_gb
                     futures[executor.submit(cp, fn_src, fn_tgt, try_other_hosts)] = fn_tgt
     for future in concurrent.futures.as_completed(futures):
-        try:
-            cur_gb = float(du(target_dir)) / 1024**3
-        except ValueError as e:
-            print(e)
-            continue
-        print(f"Completed {futures[future]} (current dir size: {cur_gb:.1f} GB)", flush=True)
+        print("Completed", futures[future], flush=True)
 
     if lock is not None:
         remove_lock(target_dir, lock, lock + "." + timestamp + ".read")

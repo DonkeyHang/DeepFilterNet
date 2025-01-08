@@ -1,6 +1,3 @@
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from typing import Final, List
 
 import torch
@@ -74,7 +71,7 @@ class MultiFrameModule(nn.Module):
         if real:
             self.pad = nn.ConstantPad3d((0, 0, 0, 0, frame_size - 1 - lookahead, lookahead), 0.0)
         else:
-            self.pad = nn.ConstantPad2d((0, 0, frame_size - 1 - lookahead, lookahead), 0.0)
+            self.pad = nn.ConstantPad2d((0, 0, frame_size - lookahead, lookahead - 1), 0.0)
         self.need_unfold = frame_size > 1
         self.lookahead = lookahead
 
@@ -173,7 +170,7 @@ class DF(MultiFrameModule):
         spec_u = self.spec_unfold(torch.view_as_complex(spec))
         coefs = torch.view_as_complex(coefs)
         spec_f = spec_u.narrow(-2, 0, self.num_freqs)
-        coefs = coefs.view(coefs.shape[0], -1, self.frame_size, coefs.shape[2], coefs.shape[3])
+        coefs = coefs.view(coefs.shape[0], -1, self.frame_size, *coefs.shape[2:])
         if self.conj:
             coefs = coefs.conj()
         spec_f = df(spec_f, coefs)

@@ -31,7 +31,7 @@ impl DfParams {
         let file = File::open(tar_file).context("Could not open model tar file.")?;
         Self::from_targz(file)
     }
-    pub fn from_bytes(tar_buf: &[u8]) -> Result<Self> {
+    pub fn from_bytes(tar_buf: &'static [u8]) -> Result<Self> {
         Self::from_targz(tar_buf)
     }
     fn from_targz<R: Read>(f: R) -> Result<Self> {
@@ -53,10 +53,6 @@ impl DfParams {
             } else if path.ends_with("config.ini") {
                 config =
                     Ini::read_from(&mut file).context("Could not load config from tar file.")?;
-            } else if path.ends_with("version.txt") {
-                let mut version = String::new();
-                file.read_to_string(&mut version).expect("Could not read version.txt");
-                log::info!("Loading model with id: {}", version);
             } else {
                 log::warn!("Found non-matching item in model tar file: {:?}", path)
             }
@@ -116,29 +112,26 @@ impl TryFrom<i32> for ReduceMask {
 }
 pub struct RuntimeParams {
     pub n_ch: usize,
-    pub post_filter: bool,
-    pub post_filter_beta: f32,
-    pub atten_lim_db: f32,
-    pub min_db_thresh: f32,
-    pub max_db_erb_thresh: f32,
-    pub max_db_df_thresh: f32,
-    pub reduce_mask: ReduceMask,
+    post_filter: bool,
+    atten_lim_db: f32,
+    min_db_thresh: f32,
+    max_db_erb_thresh: f32,
+    max_db_df_thresh: f32,
+    reduce_mask: ReduceMask,
 }
 impl RuntimeParams {
     pub fn new(
         n_ch: usize,
-        post_filter_beta: f32,
+        post_filter: bool,
         atten_lim_db: f32,
         min_db_thresh: f32,
         max_db_erb_thresh: f32,
         max_db_df_thresh: f32,
         reduce_mask: ReduceMask,
     ) -> Self {
-        let post_filter = post_filter_beta > 0.;
         Self {
             n_ch,
             post_filter,
-            post_filter_beta,
             atten_lim_db,
             min_db_thresh,
             max_db_erb_thresh,
@@ -146,49 +139,13 @@ impl RuntimeParams {
             reduce_mask,
         }
     }
-    pub fn with_post_filter(mut self, beta: f32) -> Self {
-        assert!(beta >= 0.); // Cannot be negative
-        if beta > 0. {
-            self.post_filter = true;
-        }
-        self.post_filter_beta = beta;
-        self
-    }
-    pub fn with_atten_lim(mut self, atten_lim_db: f32) -> Self {
-        self.atten_lim_db = atten_lim_db;
-        self
-    }
-    pub fn with_thresholds(
-        mut self,
-        min_db_thresh: f32,
-        max_db_erb_thresh: f32,
-        max_db_df_thresh: f32,
-    ) -> Self {
-        self.min_db_thresh = min_db_thresh;
-        self.max_db_erb_thresh = max_db_erb_thresh;
-        self.max_db_df_thresh = max_db_df_thresh;
-        self
-    }
-    pub fn with_mask_reduce(mut self, red: ReduceMask) -> Self {
-        self.reduce_mask = red;
-        self
-    }
     pub fn default_with_ch(channels: usize) -> Self {
-        RuntimeParams {
-            n_ch: channels,
-            post_filter: false,
-            post_filter_beta: 0.02,
-            atten_lim_db: 100.,
-            min_db_thresh: -10.,
-            max_db_erb_thresh: 30.,
-            max_db_df_thresh: 20.,
-            reduce_mask: ReduceMask::MEAN,
-        }
+        RuntimeParams::new(channels, false, 100., -10., 30., 20., ReduceMask::MEAN)
     }
 }
 impl Default for RuntimeParams {
     fn default() -> Self {
-        Self::default_with_ch(1)
+        RuntimeParams::new(1, false, 100., -10., 30., 20., ReduceMask::MEAN)
     }
 }
 
@@ -212,7 +169,6 @@ pub struct DfTract {
     pub n_freqs: usize,
     pub df_order: usize,
     pub post_filter: bool,
-    pub post_filter_beta: f32,
     pub alpha: f32,
     pub min_db_thresh: f32,
     pub max_db_erb_thresh: f32,
@@ -226,13 +182,12 @@ pub struct DfTract {
     m_zeros: Vec<f32>,    // Preallocated buffer for applying a zero mask
     rolling_spec_buf_y: VecDeque<Tensor>, // Enhanced stage 1 spec buf
     rolling_spec_buf_x: VecDeque<Tensor>, // Noisy spec buf
-    skip_counter: usize,  // Increment when wanting to skip processing due to low RMS
 }
 
 #[cfg(all(not(feature = "capi"), feature = "default-model"))]
 impl Default for DfTract {
     fn default() -> Self {
-        let r_params = RuntimeParams::default();
+        let r_params = RuntimeParams::new(1, false, 100., -10., 30., 20., ReduceMask::MEAN);
         let df_params = DfParams::default();
         DfTract::new(df_params, &r_params).expect("Could not load DfTract")
     }
@@ -356,8 +311,6 @@ impl DfTract {
             rolling_spec_buf_x,
             df_states,
             post_filter: rp.post_filter,
-            post_filter_beta: rp.post_filter_beta,
-            skip_counter: 0,
         };
         m.init()?;
         #[cfg(feature = "timings")]
@@ -370,21 +323,7 @@ impl DfTract {
         Ok(m)
     }
 
-    pub fn set_pf_beta(&mut self, beta: f32) {
-        log::debug!("Setting post-filter beta to {beta}");
-        self.post_filter_beta = beta;
-        if beta > 0. {
-            self.post_filter = true;
-        } else if beta == 0. {
-            self.post_filter = false;
-        } else {
-            log::warn!("Post-filter beta cannot be smaller than 0.");
-            self.post_filter = false;
-            self.post_filter_beta = 0.;
-        }
-    }
-
-    pub fn set_atten_lim(&mut self, db: f32) {
+    pub fn set_atten_lim(&mut self, db: f32) -> Result<()> {
         let lim = db.abs();
         self.atten_lim = if lim >= 100. {
             None
@@ -395,6 +334,7 @@ impl DfTract {
             log::debug!("Setting attenuation limit to {:.1} dB", lim);
             Some(10f32.powf(-lim / 20.))
         };
+        Ok(())
     }
 
     pub fn init(&mut self) -> Result<()> {
@@ -515,11 +455,6 @@ impl DfTract {
         });
         let rms = e / noisy.len() as f32;
         if rms < 1e-7 {
-            self.skip_counter += 1;
-        } else {
-            self.skip_counter = 0;
-        }
-        if self.skip_counter > 5 {
             enh.fill(0.);
             return Ok(-15.);
         }
@@ -554,6 +489,7 @@ impl DfTract {
             .unwrap()
             .to_array_view_mut()?;
         if let Some(gains) = gains {
+            let pf = apply_erb && self.post_filter;
             let mut gains = gains.into_array()?;
             if gains.shape()[0] < noisy.shape()[0] {
                 // Mask was reduced to single channel
@@ -562,24 +498,22 @@ impl DfTract {
                     self.df_states[0].apply_mask(
                         as_slice_mut_complex(spec_ch.as_slice_mut().unwrap()),
                         gain_slc,
+                        pf,
                     );
                 }
             } else {
                 // Same number of channels of gains and spec
-                for (gains_ch, mut spec_ch) in
-                    gains.axis_iter(Axis(0)).zip(spec.axis_iter_mut(Axis(0)))
+                for (mut gains_ch, mut spec_ch) in
+                    gains.axis_iter_mut(Axis(0)).zip(spec.axis_iter_mut(Axis(0)))
                 {
-                    let gain_slc = gains_ch.as_slice().unwrap();
+                    let gain_slc = gains_ch.as_slice_mut().unwrap();
                     self.df_states[0].apply_mask(
                         as_slice_mut_complex(spec_ch.as_slice_mut().unwrap()),
                         gain_slc,
+                        pf,
                     );
                 }
             }
-            self.skip_counter = 0;
-        } else {
-            // gains are None => skipped due to LSNR
-            self.skip_counter += 1;
         }
 
         // This spectrum will only be used for the upper frequecies
@@ -596,36 +530,17 @@ impl DfTract {
             )?;
         };
 
-        let spec_noisy = as_arrayview_complex(
-            self.rolling_spec_buf_x
+        // Limit noise attenuation by mixing back some of the noisy signal
+        let mut spec_enh = self.spec_buf.to_array_view_mut()?;
+        if let Some(lim) = self.atten_lim {
+            let spec_noisy = self
+                .rolling_spec_buf_x
                 .get(self.lookahead.max(self.df_order) - self.lookahead - 1)
                 .unwrap()
-                .to_array_view::<f32>()
-                .unwrap(),
-            &[self.ch, self.n_freqs],
-        )
-        .into_dimensionality::<Ix2>()
-        .unwrap();
-        let mut spec_enh = as_arrayview_mut_complex(
-            self.spec_buf.to_array_view_mut::<f32>().unwrap(),
-            &[self.ch, self.n_freqs],
-        )
-        .into_dimensionality::<Ix2>()
-        .unwrap();
-
-        // Run post filter
-        if apply_erb && self.post_filter {
-            post_filter(
-                spec_noisy.as_slice().unwrap(),
-                spec_enh.as_slice_mut().unwrap(),
-                self.post_filter_beta,
-            );
-        }
-
-        // Limit noise attenuation by mixing back some of the noisy signal
-        if let Some(lim) = self.atten_lim {
+                .to_array_view()
+                .unwrap();
             spec_enh.map_inplace(|x| *x *= 1. - lim);
-            spec_enh.scaled_add(lim.into(), &spec_noisy);
+            spec_enh.scaled_add(lim, &spec_noisy);
         }
 
         for (state, spec_ch, mut enh_out_ch) in izip!(
@@ -634,7 +549,7 @@ impl DfTract {
             enh.axis_iter_mut(Axis(0)),
         ) {
             state.synthesis(
-                spec_ch.to_owned().as_slice_mut().unwrap(),
+                as_slice_mut_complex(spec_ch.to_owned().as_slice_mut().unwrap()),
                 enh_out_ch.as_slice_mut().unwrap(),
             );
         }
@@ -671,9 +586,14 @@ impl DfTract {
         }
     }
 
-    pub fn set_spec_buffer(&mut self, spec: ArrayView2<f32>) -> Result<()> {
-        debug_assert_eq!(self.spec_buf.shape(), spec.shape());
-        let mut buf = self.spec_buf.to_array_view_mut()?.into_shape([self.ch, self.n_freqs])?;
+    pub fn set_spec_buffer(&mut self, spec: ArrayView2<Complex32>) -> Result<()> {
+        let mut buf = as_arrayview_mut_complex(
+            self.spec_buf.to_array_view_mut::<f32>().unwrap(),
+            &[self.ch, self.n_freqs],
+        );
+
+        debug_assert_eq!(buf.shape(), spec.shape());
+
         for (i_ch, mut b_ch) in spec.outer_iter().zip(buf.outer_iter_mut()) {
             for (&i, b) in i_ch.iter().zip(b_ch.iter_mut()) {
                 *b = i
@@ -685,7 +605,7 @@ impl DfTract {
     pub fn get_spec_noisy(&self) -> ArrayView2<Complex32> {
         as_arrayview_complex(
             self.rolling_spec_buf_x
-                .get(self.lookahead.max(self.df_order) - self.lookahead - 1)
+                .get(self.lookahead)
                 .unwrap()
                 .to_array_view::<f32>()
                 .unwrap(),
@@ -697,14 +617,6 @@ impl DfTract {
     pub fn get_spec_enh(&self) -> ArrayView2<Complex32> {
         as_arrayview_complex(
             self.spec_buf.to_array_view::<f32>().unwrap(),
-            &[self.ch, self.n_freqs],
-        )
-        .into_dimensionality::<Ix2>()
-        .unwrap()
-    }
-    pub fn get_mut_spec_enh(&mut self) -> ArrayViewMut2<Complex32> {
-        as_arrayview_mut_complex(
-            self.spec_buf.to_array_view_mut::<f32>().unwrap(),
             &[self.ch, self.n_freqs],
         )
         .into_dimensionality::<Ix2>()
