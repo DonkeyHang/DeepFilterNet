@@ -1026,7 +1026,7 @@ class TorchDFMinimalPipeline(nn.Module):
     def __init__(
         self,
         # model_base_dir="DeepFilterNet3",
-        model_base_dir="/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet-torchDF_main/models/DeepFilterNet3_torchDF",
+        model_base_dir="/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/models/DeepFilterNet3_torchDF",
         epoch="best",
         device="cpu",
     ):
@@ -1219,13 +1219,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--audio-path", 
         type=str, 
-        default="/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet-torchDF_main/assets/input_noise_car_talk.wav", 
+        default="/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/input_noise_car_talk.wav", 
         help="Path to audio file"
     )
     parser.add_argument(
         "--output-path", 
         type=str, 
-        default="/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet-torchDF_main/assets/output_noise_car_talk_streaming_minimal_torchDF123_res.wav", 
+        default="/Users/donkeyddddd/Documents/Rx_projects/git_projects/DeepFilterNet/assets/output_noise_car_talk_streaming_minimal_torchDF123_res.wav", 
         help="Path to output file"
     )
     parser.add_argument(
